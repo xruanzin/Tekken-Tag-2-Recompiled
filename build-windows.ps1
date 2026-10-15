@@ -22,13 +22,30 @@ function Require-Command([string]$Name) {
     }
 }
 
+$RpxPath = (Resolve-Path $Rpx).Path
+$ExpectedRpxSha256 = "fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019"
+$ActualRpxSha256 = (Get-FileHash -Algorithm SHA256 $RpxPath).Hash.ToLowerInvariant()
+if ($ActualRpxSha256 -ne $ExpectedRpxSha256) {
+    throw @"
+Unsupported Tekken.rpx.
+
+This port requires the European update v16 executable:
+  Base title ID:   000500001010F800
+  Update title ID: 0005000E1010F800
+  Expected SHA256: $ExpectedRpxSha256
+  Your SHA256:     $ActualRpxSha256
+
+Do not continue with a different region/version; generated code addresses will not match.
+"@
+}
+
+Write-Host "==> RPX verified: European update v16"
+
 Require-Command git
 Require-Command cmake
 Require-Command ninja
 Require-Command clang-cl
 Require-Command py
-
-$RpxPath = (Resolve-Path $Rpx).Path
 $BuildPath = Join-Path $Root $BuildDir
 $GeneratedPath = Join-Path $Root $GeneratedDir
 
