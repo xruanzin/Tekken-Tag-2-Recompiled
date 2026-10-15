@@ -46,7 +46,14 @@ function Import-VsDevEnvironment {
 
 $OriginalPath = $env:Path
 Import-VsDevEnvironment
-$env:Path = "$env:Path;$OriginalPath"
+
+$System32 = Join-Path $env:SystemRoot "System32"
+$WindowsPowerShell = Join-Path $System32 "WindowsPowerShell\v1.0"
+$env:Path = "$WindowsPowerShell;$System32;$env:Path;$OriginalPath"
+
+if (-not (Get-Command powershell.exe -ErrorAction SilentlyContinue)) {
+    throw "Windows PowerShell 5.1 (powershell.exe) was not found; vcpkg bootstrap requires it."
+}
 
 if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
     $DefaultLlvmBin = "C:\Program Files\LLVM\bin"
