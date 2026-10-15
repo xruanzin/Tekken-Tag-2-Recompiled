@@ -16,67 +16,95 @@ if ($env:OS -ne "Windows_NT") {
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
-function Require-Command([string]$Name) {
-    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-        throw "Missing required command: $Name"
+function Resolve-ToolPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Candidates = @()
+    )
+
+    $Command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($Command -and $Command.Source) {
+        return $Command.Source
     }
-}
 
-function Import-VsDevEnvironment {
-    $ProgramFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
-    if (-not $ProgramFilesX86) { return }
-
-    $VsWhere = Join-Path $ProgramFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path -LiteralPath $VsWhere)) { return }
-
-    $InstallPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    if (-not $InstallPath) { return }
-
-    $VsDevCmd = Join-Path $InstallPath "Common7\Tools\VsDevCmd.bat"
-    if (-not (Test-Path -LiteralPath $VsDevCmd)) { return }
-
-    Write-Host "==> Loading Visual Studio C++ build environment"
-    $CmdLine = "`"$VsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
-    & cmd.exe /d /s /c $CmdLine | ForEach-Object {
-        if ($_ -match '^([^=]+)=(.*)$') {
-            Set-Item -Path "Env:$($matches[1])" -Value $matches[2]
+    foreach ($Candidate in $Candidates) {
+        if ($Candidate -and (Test-Path -LiteralPath $Candidate)) {
+            return (Resolve-Path -LiteralPath $Candidate).Path
         }
     }
+
+    throw "Missing required command: $Name"
+}
+
+$System32 = Join-Path $env:SystemRoot "System32"
+$PowerShellDir = Join-Path $System32 "WindowsPowerShell\v1.0"
+$PowerShellExe = Join-Path $PowerShellDir "powershell.exe"
+
+if (-not (Test-Path -LiteralPath $PowerShellExe)) {
+    throw "Windows PowerShell 5.1 was not found at $PowerShellExe"
 }
 
 $OriginalPath = $env:Path
-$System32 = Join-Path $env:SystemRoot "System32"
-$WindowsPowerShell = Join-Path $System32 "WindowsPowerShell\v1.0"
 
-# VsDevCmd.bat itself calls Windows utilities such as findstr, so make the
-# Windows system directories visible before importing the VS environment.
-$env:Path = "$WindowsPowerShell;$System32;$OriginalPath"
-Import-VsDevEnvironment
-$env:Path = "$WindowsPowerShell;$System32;$env:Path;$OriginalPath"
+$GitExe = Resolve-ToolPath "git.exe"
+$CMakeExe = Resolve-ToolPath "cmake.exe"
+$NinjaExe = Resolve-ToolPath "ninja.exe"
+$ClangClExe = Resolve-ToolPath "clang-cl.exe" @(
+    "C:\Program Files\LLVM\bin\clang-cl.exe"
+)
 
-if (-not (Get-Command findstr.exe -ErrorAction SilentlyContinue)) {
-    throw "Windows findstr.exe was not found in PATH."
-}
-
-if (-not (Get-Command powershell.exe -ErrorAction SilentlyContinue)) {
-    throw "Windows PowerShell 5.1 (powershell.exe) was not found; vcpkg bootstrap requires it."
-}
-
-if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
-    $DefaultLlvmBin = "C:\Program Files\LLVM\bin"
-    $DefaultClang = Join-Path $DefaultLlvmBin "clang-cl.exe"
-    if (Test-Path -LiteralPath $DefaultClang) {
-        $env:Path = "$DefaultLlvmBin;$env:Path"
+$PythonExe = $null
+$Py = Get-Command "py.exe" -ErrorAction SilentlyContinue
+if ($Py -and $Py.Source) {
+    $PythonExe = $Py.Source
+} else {
+    $Python = Get-Command "python.exe" -ErrorAction SilentlyContinue
+    if ($Python -and $Python.Source) {
+        $PythonExe = $Python.Source
     }
 }
-
-if (Get-Command py -ErrorAction SilentlyContinue) {
-    $PythonCommand = "py"
-} elseif (Get-Command python -ErrorAction SilentlyContinue) {
-    $PythonCommand = "python"
-} else {
-    throw "Missing Python 3. Install Python or make either 'py' or 'python' available in PATH."
+if (-not $PythonExe) {
+    throw "Python 3 was not found. Install Python and make python.exe available."
 }
+
+# Keep Windows system tools visible regardless of what other installers put in PATH.
+$ToolDirs = @(
+    $PowerShellDir,
+    $System32,
+    (Split-Path -Parent $GitExe),
+    (Split-Path -Parent $CMakeExe),
+    (Split-Path -Parent $NinjaExe),
+    (Split-Path -Parent $ClangClExe),
+    (Split-Path -Parent $PythonExe)
+)
+$PathParts = @($ToolDirs + ($OriginalPath -split ';')) |
+    Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
+    Select-Object -Unique
+$env:Path = $PathParts -join ';'
+
+Write-Host "==> Toolchain"
+Write-Host "    CMake:   $CMakeExe"
+Write-Host "    Ninja:   $NinjaExe"
+Write-Host "    ClangCL: $ClangClExe"
+Write-Host "    Python:  $PythonExe"
+
+# Verify that the Microsoft C++ Build Tools are installed. clang-cl can locate
+# their headers/libraries through the normal Visual Studio installation metadata;
+# we deliberately do not import VsDevCmd.bat because it can rewrite PATH.
+$ProgramFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+$VsWhere = if ($ProgramFilesX86) {
+    Join-Path $ProgramFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+} else {
+    $null
+}
+if (-not $VsWhere -or -not (Test-Path -LiteralPath $VsWhere)) {
+    throw "Visual Studio Build Tools were not found (vswhere.exe is missing)."
+}
+$VsInstall = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $VsInstall) {
+    throw "Visual Studio C++ Build Tools are not installed."
+}
+Write-Host "    VS tools: $VsInstall"
 
 $RpxPath = (Resolve-Path -LiteralPath $Rpx).Path
 $ExpectedRpxSha256 = "fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019"
@@ -91,64 +119,85 @@ This port requires the European v16 executable:
   Update title ID: 0005000E1010F800
   Expected SHA256: $ExpectedRpxSha256
   Your SHA256:     $ActualRpxSha256
-
-Do not continue with a different region/version; generated code addresses will not match.
 "@
 }
 
 Write-Host "==> RPX verified: European v16"
 
-Require-Command git
-Require-Command cmake
-Require-Command ninja
-Require-Command clang-cl
-
-$NinjaExe = (Get-Command ninja -ErrorAction Stop).Source
 $BuildPath = Join-Path $Root $BuildDir
 $GeneratedPath = Join-Path $Root $GeneratedDir
 
 if ($Clean -and (Test-Path -LiteralPath $BuildPath)) {
+    Write-Host "==> Cleaning previous CMake build"
     Remove-Item -Recurse -Force -LiteralPath $BuildPath
 }
 
 Write-Host "==> Fetching pinned project dependencies"
-& $PythonCommand tools/setup_deps.py
+& $PythonExe (Join-Path $Root "tools\setup_deps.py")
 if ($LASTEXITCODE -ne 0) {
     throw "tools/setup_deps.py failed"
 }
 
 $VcpkgBaseline = "c52f7bd748185ef0e0daf033d9f2ddfc8a3449ea"
-$VcpkgRoot = Join-Path $Root ".tools/vcpkg"
+$VcpkgRoot = Join-Path $Root ".tools\vcpkg"
 $VcpkgGit = Join-Path $VcpkgRoot ".git"
+$VcpkgHeadFile = Join-Path $VcpkgGit "HEAD"
 
 if (-not (Test-Path -LiteralPath $VcpkgGit)) {
     New-Item -ItemType Directory -Force $VcpkgRoot | Out-Null
     Write-Host "==> Initializing pinned vcpkg"
-    & git -C $VcpkgRoot init --quiet
-    & git -C $VcpkgRoot remote add origin https://github.com/microsoft/vcpkg
+    & $GitExe -C $VcpkgRoot init --quiet
+    if ($LASTEXITCODE -ne 0) { throw "vcpkg git init failed" }
+    & $GitExe -C $VcpkgRoot remote add origin https://github.com/microsoft/vcpkg
+    if ($LASTEXITCODE -ne 0) { throw "vcpkg git remote setup failed" }
 }
 
-Write-Host "==> Fetching pinned vcpkg $VcpkgBaseline"
-& git -C $VcpkgRoot fetch --depth 1 origin $VcpkgBaseline
-if ($LASTEXITCODE -ne 0) {
-    throw "vcpkg fetch failed"
-}
-& git -C $VcpkgRoot checkout --detach FETCH_HEAD
-if ($LASTEXITCODE -ne 0) {
-    throw "vcpkg checkout failed"
+$CurrentVcpkg = ""
+if (Test-Path -LiteralPath $VcpkgHeadFile) {
+    $HeadText = (Get-Content -LiteralPath $VcpkgHeadFile -Raw).Trim()
+    if ($HeadText -match '^[0-9a-fA-F]{40}$') {
+        $CurrentVcpkg = $HeadText.ToLowerInvariant()
+    }
 }
 
-$env:VCPKG_ROOT = $VcpkgRoot
+if ($CurrentVcpkg -ne $VcpkgBaseline) {
+    Write-Host "==> Fetching pinned vcpkg $VcpkgBaseline"
+    & $GitExe -C $VcpkgRoot fetch --depth 1 origin $VcpkgBaseline
+    if ($LASTEXITCODE -ne 0) { throw "vcpkg fetch failed" }
+    & $GitExe -C $VcpkgRoot checkout --detach FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { throw "vcpkg checkout failed" }
+} else {
+    Write-Host "==> Pinned vcpkg already present"
+}
+
 $VcpkgExe = Join-Path $VcpkgRoot "vcpkg.exe"
 if (-not (Test-Path -LiteralPath $VcpkgExe)) {
-    Write-Host "==> Bootstrapping vcpkg"
-    & (Join-Path $VcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
+    $BootstrapPs1 = Join-Path $VcpkgRoot "scripts\bootstrap.ps1"
+    if (-not (Test-Path -LiteralPath $BootstrapPs1)) {
+        throw "vcpkg bootstrap script was not found at $BootstrapPs1"
+    }
+
+    Write-Host "==> Bootstrapping vcpkg directly with Windows PowerShell"
+    & $PowerShellExe -NoProfile -ExecutionPolicy Bypass -File $BootstrapPs1 -disableMetrics
     if ($LASTEXITCODE -ne 0) {
         throw "vcpkg bootstrap failed"
     }
 }
 
-$Toolchain = Join-Path $VcpkgRoot "scripts/buildsystems/vcpkg.cmake"
+if (-not (Test-Path -LiteralPath $VcpkgExe)) {
+    throw "vcpkg.exe was not produced."
+}
+
+$env:VCPKG_ROOT = $VcpkgRoot
+$VcpkgCache = Join-Path $Root ".vcpkg-cache"
+New-Item -ItemType Directory -Force $VcpkgCache | Out-Null
+$env:VCPKG_BINARY_SOURCES = "clear;files,$VcpkgCache,readwrite"
+$env:VCPKG_DISABLE_METRICS = "1"
+
+$Toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+if (-not (Test-Path -LiteralPath $Toolchain)) {
+    throw "vcpkg CMake toolchain was not found."
+}
 
 $CommonArgs = @(
     "-S", $Root,
@@ -156,25 +205,25 @@ $CommonArgs = @(
     "-G", "Ninja",
     "-DCMAKE_MAKE_PROGRAM=$NinjaExe",
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DCMAKE_C_COMPILER=clang-cl",
-    "-DCMAKE_CXX_COMPILER=clang-cl",
+    "-DCMAKE_C_COMPILER=$ClangClExe",
+    "-DCMAKE_CXX_COMPILER=$ClangClExe",
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain",
     "-DVCPKG_TARGET_TRIPLET=x64-windows-static"
 )
 
 Write-Host "==> Configuring Windows host tools"
-& cmake @CommonArgs
+& $CMakeExe @CommonArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake configure failed"
 }
 
 Write-Host "==> Building cafe-recomp and host runtime"
-& cmake --build $BuildPath --target cafe-recomp cafe_runtime
+& $CMakeExe --build $BuildPath --target cafe-recomp cafe_runtime
 if ($LASTEXITCODE -ne 0) {
     throw "Host tools build failed"
 }
 
-$Recompiler = Join-Path $BuildPath "recomp/cafe-recomp.exe"
+$Recompiler = Join-Path $BuildPath "recomp\cafe-recomp.exe"
 if (-not (Test-Path -LiteralPath $Recompiler)) {
     throw "cafe-recomp.exe was not produced at $Recompiler"
 }
@@ -188,13 +237,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "==> Configuring final game executable"
-& cmake @CommonArgs "-DTTT2_GENERATED_DIR=$GeneratedPath"
+& $CMakeExe @CommonArgs "-DTTT2_GENERATED_DIR=$GeneratedPath"
 if ($LASTEXITCODE -ne 0) {
     throw "Final CMake configure failed"
 }
 
 Write-Host "==> Building ttt2.exe"
-& cmake --build $BuildPath --target ttt2
+& $CMakeExe --build $BuildPath --target ttt2
 if ($LASTEXITCODE -ne 0) {
     throw "Final ttt2 build failed"
 }
@@ -207,4 +256,4 @@ if (-not (Test-Path -LiteralPath $Exe)) {
 Write-Host ""
 Write-Host "SUCCESS"
 Write-Host "Executable: $Exe"
-Write-Host "Run it with your own .wua or extracted title path."
+Write-Host "Run it with your own .wua or extracted European v16 title folder."
