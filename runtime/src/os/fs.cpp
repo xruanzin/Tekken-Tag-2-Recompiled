@@ -36,6 +36,7 @@ double seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 std::unordered_map<uint32_t, int32_t> g_last_status; // FSClient -> last FSStatus
+uint32_t g_fs_error_logs = 0;
 
 // FSErrorFlag bits a caller lists in errMask to receive that status back
 // instead of the system's fatal error handling.
@@ -60,10 +61,21 @@ int32_t finish(GuestAddress client, int32_t status, uint32_t mask, const char* o
         std::lock_guard lock(g_fs_mutex);
         g_last_status[client.value] = status;
     }
-    if (status < 0 && status != vfs::kEnd && !(mask & mask_bit(status))) {
-        // On the console this is a fatal error screen; keep running and say so.
-        std::fprintf(stderr, "ttt2: FS %s %.*s failed with unmasked status %d\n", operation,
-                     static_cast<int>(path.size()), path.data(), status);
+    if (status < 0 && status != vfs::kEnd) {
+        // Log the first boot-time failures even when the title masks them.
+        // Missing optional files are common, so cap this diagnostic to avoid
+        // flooding the console during normal play.
+        if (g_fs_error_logs < 64) {
+            std::fprintf(stderr,
+                         "ttt2: FS diagnostic #%u: %s %.*s -> status %d, mask=0x%08X%s\n",
+                         ++g_fs_error_logs, operation, static_cast<int>(path.size()), path.data(),
+                         status, mask, (mask & mask_bit(status)) ? " (masked)" : " (UNMASKED)");
+        }
+        if (!(mask & mask_bit(status))) {
+            // On the console this is a fatal error screen; keep running and say so.
+            std::fprintf(stderr, "ttt2: FS %s %.*s failed with unmasked status %d\n", operation,
+                         static_cast<int>(path.size()), path.data(), status);
+        }
     }
     return status;
 }
