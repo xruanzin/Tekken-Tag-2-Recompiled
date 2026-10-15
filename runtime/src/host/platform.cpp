@@ -1,6 +1,7 @@
 #include "host/platform.h"
 
 #include <cstdlib>
+#include <ctime>
 #include <system_error>
 
 #ifdef _WIN32
@@ -86,6 +87,26 @@ bool is_terminal(FILE* stream) {
     return _isatty(_fileno(stream)) != 0;
 #else
     return isatty(fileno(stream)) != 0;
+#endif
+}
+
+int64_t local_utc_offset_seconds(std::time_t when) {
+#ifdef _WIN32
+    std::tm local{};
+    std::tm utc{};
+    if (localtime_s(&local, &when) != 0 || gmtime_s(&utc, &when) != 0) return 0;
+    // mktime interprets a broken-down time as local time. Give the UTC
+    // broken-down value the same DST state as the local value, so their
+    // difference is the effective UTC offset for this instant.
+    utc.tm_isdst = local.tm_isdst;
+    const std::time_t local_value = std::mktime(&local);
+    const std::time_t utc_as_local = std::mktime(&utc);
+    if (local_value == static_cast<std::time_t>(-1) || utc_as_local == static_cast<std::time_t>(-1)) return 0;
+    return static_cast<int64_t>(std::difftime(local_value, utc_as_local));
+#else
+    std::tm local{};
+    if (localtime_r(&when, &local) == nullptr) return 0;
+    return static_cast<int64_t>(local.tm_gmtoff);
 #endif
 }
 

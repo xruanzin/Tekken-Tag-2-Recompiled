@@ -2,7 +2,7 @@ name: Windows host
 
 on:
   push:
-    branches: [ main, windows, win32, "windows-*" ]
+    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
@@ -18,13 +18,22 @@ jobs:
       - name: Fetch pinned source dependencies
         run: py tools/setup_deps.py
 
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: .vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force ".vcpkg-cache" | Out-Null
           git clone --depth 1 https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP/vcpkg"
           & "$env:RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
 
       - name: Configure (Clang/LLVM, x64)
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite"
         shell: pwsh
         run: |
           cmake -S . -B build/windows -G Ninja `
