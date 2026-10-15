@@ -5,7 +5,7 @@
     "openssl",
     "sdl3",
     "shaderc",
-    "vulkan-sdk-components",
+    "vulkan",
     "zlib",
     "zstd"
   ]
