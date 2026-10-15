@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(ttt2_recomp_tools LANGUAGES C CXX)
 
+# The Windows build uses the x64-windows-static vcpkg triplet. Keep every
+# project target on the same static MSVC runtime (/MT, /MTd) as vcpkg and
+# ZArchive to avoid RuntimeLibrary /FAILIFMISMATCH errors at the final link.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # Windows 11 is a supported host for the runtime.  The hardened WUA extractor
 # still uses openat/O_NOFOLLOW and remains POSIX-only; Windows users can feed
 # an already extracted RPX to cafe-recomp (Cemu can extract the title).
