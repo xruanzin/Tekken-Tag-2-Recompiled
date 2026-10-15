@@ -13,7 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace cafe::vfs {
 namespace {
@@ -21,9 +20,9 @@ namespace {
 namespace fs = std::filesystem;
 
 struct Source {
-    std::unique_ptr<ZArchiveReader> archive; // null: host directories
+    std::unique_ptr<ZArchiveReader> archive; // null: host directory
     std::vector<std::string> layers;         // the game's folders in the archive, the first winning
-    std::vector<fs::path> directories;       // extracted layers, first winning (update then base)
+    fs::path directory;
 };
 
 Source g_source;
@@ -153,47 +152,7 @@ fs::path host_resolve(const fs::path& root, const std::vector<std::string>& part
 }
 
 fs::path game_host_path(const std::string& relative) {
-    const auto parts = components(relative);
-    fs::path first;
-    for (const fs::path& root : g_source.directories) {
-        const fs::path candidate = host_resolve(root, parts);
-        if (first.empty()) first = candidate;
-        std::error_code ec;
-        if (fs::exists(candidate, ec)) return candidate;
-    }
-    return first;
-}
-
-Status list_game_host(const std::string& relative, Dir& dir) {
-    const auto parts = components(relative);
-    std::unordered_set<std::string> seen;
-    bool found_directory = false;
-    bool found_nondirectory = false;
-    for (const fs::path& root : g_source.directories) {
-        const fs::path path = host_resolve(root, parts);
-        std::error_code ec;
-        if (!fs::exists(path, ec)) continue;
-        if (!fs::is_directory(path, ec)) {
-            found_nondirectory = true;
-            continue;
-        }
-        found_directory = true;
-        for (const auto& entry : fs::directory_iterator(path, ec)) {
-            const std::string key = lower(entry.path().filename().string());
-            if (!seen.insert(key).second) continue;
-            DirEntry e;
-            e.name = entry.path().filename().string();
-            std::error_code entry_ec;
-            const fs::file_status entry_status = fs::status(entry.path(), entry_ec);
-            if (entry_ec) continue;
-            e.stat.directory = fs::is_directory(entry_status);
-            e.stat.size = e.stat.directory ? 0 : fs::file_size(entry.path(), entry_ec);
-            if (entry_ec) continue;
-            dir.entries.push_back(std::move(e));
-        }
-    }
-    if (found_directory) return kOk;
-    return found_nondirectory ? kNotDir : kNotFound;
+    return host_resolve(g_source.directory, components(relative));
 }
 
 Status from_error(const std::error_code& error) {
@@ -299,25 +258,13 @@ bool replace_archive_entries(const std::string& archive, const std::map<uint32_t
     return true;
 }
 
-void open_game(const fs::path& source, const std::optional<fs::path>& update) {
+void open_game(const fs::path& source) {
     g_source = Source{};
     std::error_code ec;
     if (fs::is_directory(source, ec)) {
-        if (update) {
-            std::error_code update_ec;
-            if (!fs::is_directory(*update, update_ec)) {
-                fatal("update path is not a directory: %s", host::path_string(*update).c_str());
-            }
-            g_source.directories.push_back(*update);
-            g_source.directories.push_back(source);
-            std::fprintf(stderr, "ttt2: extracted files from update %s over base %s\n",
-                         host::path_string(*update).c_str(), host::path_string(source).c_str());
-        } else {
-            g_source.directories.push_back(source);
-        }
+        g_source.directory = source;
         return;
     }
-    if (update) fatal("a separate update directory can only be used with an extracted base directory");
     g_source.archive.reset(ZArchiveReader::OpenFromFile(source));
     if (!g_source.archive) fatal("cannot open game archive %s", host::path_string(source).c_str());
     g_source.layers = wua::game_layers(*g_source.archive);
@@ -524,7 +471,7 @@ Status open_dir(std::string_view path, int32_t& handle) {
     if (r.area == Area::kSave) {
         status = list_host(host_resolve(g_save_root, r.save_parts), dir);
     } else if (r.area == Area::kGame && !g_source.archive) {
-        status = list_game_host(r.relative, dir);
+        status = list_host(game_host_path(r.relative), dir);
     } else if (r.area == Area::kGame) {
         const ZArchiveNodeHandle node = wua::find(*g_source.archive, g_source.layers, r.relative);
         std::vector<wua::Entry> entries;
