@@ -1,9 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 project(ttt2_recomp_tools LANGUAGES C CXX)
 
-if(NOT UNIX)
-    message(FATAL_ERROR "The safe extraction utility currently requires a POSIX host.")
-endif()
+# Windows 11 is a supported host for the runtime.  The hardened WUA extractor
+# still uses openat/O_NOFOLLOW and remains POSIX-only; Windows users can feed
+# an already extracted RPX to cafe-recomp (Cemu can extract the title).
+
+function(ttt2_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
 
 add_subdirectory(third_party/ZArchive EXCLUDE_FROM_ALL)
 
@@ -19,12 +27,18 @@ add_library(amd_addrlib STATIC EXCLUDE_FROM_ALL
 target_include_directories(amd_addrlib SYSTEM PUBLIC ${ADDRLIB_DIR}/include)
 target_include_directories(amd_addrlib PRIVATE ${ADDRLIB_DIR}/src)
 target_compile_features(amd_addrlib PRIVATE cxx_std_17)
-target_compile_options(amd_addrlib PRIVATE -w)
+if(MSVC)
+    target_compile_options(amd_addrlib PRIVATE /w)
+else()
+    target_compile_options(amd_addrlib PRIVATE -w)
+endif()
 
-add_executable(wua_extract tools/wua_extract.cpp)
-target_compile_features(wua_extract PRIVATE cxx_std_20)
-target_link_libraries(wua_extract PRIVATE ZArchive::zarchive)
-target_compile_options(wua_extract PRIVATE -Wall -Wextra -Wpedantic)
+if(UNIX)
+    add_executable(wua_extract tools/wua_extract.cpp)
+    target_compile_features(wua_extract PRIVATE cxx_std_20)
+    target_link_libraries(wua_extract PRIVATE ZArchive::zarchive)
+    ttt2_warnings(wua_extract)
+endif()
 
 # Function-level PowerPC -> C++ recompiler for the standalone port.
 add_subdirectory(recomp)
@@ -42,10 +56,17 @@ if(TTT2_GENERATED_DIR)
     target_compile_features(ttt2_generated PRIVATE cxx_std_20)
     # Translated code is huge and flat: -O2 compiles far faster than -O3 for
     # the same result. FMA is required for exact fused multiply-add.
-    target_compile_options(ttt2_generated PRIVATE -O2 -march=x86-64-v3
-        -fno-exceptions -Wno-unused-label)
+    if(MSVC)
+        target_compile_options(ttt2_generated PRIVATE /O2 /arch:AVX2 /EHs-c-)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(ttt2_generated PRIVATE /clang:-Wno-unused-label)
+        endif()
+    else()
+        target_compile_options(ttt2_generated PRIVATE -O2 -march=x86-64-v3
+            -fno-exceptions -Wno-unused-label)
+    endif()
 
     add_executable(ttt2 runtime/src/main.cpp)
     target_link_libraries(ttt2 PRIVATE cafe_runtime ttt2_generated)
-    target_compile_options(ttt2 PRIVATE -Wall -Wextra -Wpedantic)
+    ttt2_warnings(ttt2)
 endif()

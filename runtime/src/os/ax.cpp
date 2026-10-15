@@ -29,6 +29,7 @@
 #include "cafe/export.h"
 #include "cafe/sysmem.h"
 #include "host/audio.h"
+#include "host/thread.h"
 
 #include <algorithm>
 #include <chrono>
@@ -310,7 +311,7 @@ void wait_for_frame(std::chrono::steady_clock::time_point& next) {
     if (std::chrono::steady_clock::now() - next > kFramePeriod * 10) next = std::chrono::steady_clock::now();
 }
 
-void* ax_main(void*) {
+void ax_main(void*) {
     Thread* t = g_ax_thread;
     bind_current_thread(t);
     auto next = std::chrono::steady_clock::now();
@@ -342,7 +343,6 @@ void* ax_main(void*) {
         run_final_mix(t, 1, final_mix[1], nullptr);
         host::queue_audio(output, kOutputSamples);
     }
-    return nullptr;
 }
 
 // ------------------------------------------------------------- exports
@@ -363,13 +363,7 @@ void AXInit() {
     }
     g_initialized = true;
     g_ax_thread = create_internal_thread("cafe audio", 0);
-    pthread_t host;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 64u << 20);
-    pthread_create(&host, &attr, ax_main, nullptr);
-    pthread_attr_destroy(&attr);
-    pthread_detach(host);
+    host::start_detached_thread(ax_main, nullptr, 64u << 20);
 }
 
 void AXQuit() {
@@ -560,7 +554,7 @@ void AXSetVoiceBiquadCoefs(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uin
 
 // One-pole low-pass coefficients for a cutoff frequency at 32 kHz.
 void AXComputeLpfCoefs(uint32_t frequency, be<uint16_t>* a0, be<uint16_t>* b0) {
-    const double b = 2.0 - std::cos(2.0 * M_PI * frequency / 32000.0);
+    const double b = 2.0 - std::cos(2.0 * 3.14159265358979323846 * frequency / 32000.0);
     const double c = b - std::sqrt(b * b - 1.0);
     if (a0) *a0 = static_cast<uint16_t>((1.0 - c) * 32768.0);
     if (b0) *b0 = static_cast<uint16_t>(c * 32768.0);

@@ -98,7 +98,7 @@ add_test(NAME wua_layers_test COMMAND wua_layers_test)
 # The title's file formats, icons and texts (synthetic data; no game files).
 add_executable(title_test title_test.cpp)
 target_link_libraries(title_test PRIVATE cafe_title)
-target_compile_options(title_test PRIVATE -Wall -Wextra)
+ttt2_warnings(title_test)
 add_test(NAME title_test COMMAND title_test)
 
 # Guest polling loops must see other threads' stores (no Dolphin needed).
@@ -106,5 +106,9 @@ add_executable(memory_model_test memory_model_test.cpp)
 target_include_directories(memory_model_test PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)
 target_compile_features(memory_model_test PRIVATE cxx_std_20)
 # The flags the port compiles generated code with.
-target_compile_options(memory_model_test PRIVATE -O2 -march=x86-64-v3 -Wno-unused-label)
+if(MSVC)
+    target_compile_options(memory_model_test PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(memory_model_test PRIVATE -O2 -march=x86-64-v3 -Wno-unused-label)
+endif()
 add_test(NAME memory_model_test COMMAND memory_model_test)

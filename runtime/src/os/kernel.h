@@ -16,7 +16,6 @@
 #include <csetjmp>
 #include <cstdint>
 #include <mutex>
-#include <pthread.h>
 #include <string>
 
 namespace cafe::os {
@@ -57,7 +56,6 @@ be<T>& field(uint32_t object, uint32_t offset) {
 struct Thread {
     uint32_t guest = 0; // OSThread
     PPCContext ctx{};
-    pthread_t host{};
     bool host_started = false;
     bool finished = false; // entry returned or OSExitThread ran
     bool interrupts_disabled = false;

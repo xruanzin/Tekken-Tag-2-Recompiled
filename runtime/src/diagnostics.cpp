@@ -1,11 +1,18 @@
 #include "cafe/generated.h"
 #include "cafe/ppc_ops.h"
 #include "cafe/runtime.h"
+#include "host/platform.h"
 
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -21,47 +28,67 @@ void print_backtrace(const PPCContext& ctx) {
     std::fprintf(stderr, "  0x%08X\n", ctx.lr);
     uint32_t frame = ctx.r[1];
     for (int depth = 0; depth < 48; ++depth) {
-        if (!guest_memory_committed(frame, 8)) {
-            break;
-        }
+        if (!guest_memory_committed(frame, 8)) break;
         const uint32_t back = ppc::ld32(guest_base(), frame);
-        if (back == 0 || back <= frame || !guest_memory_committed(back, 8)) {
-            break;
-        }
+        if (back == 0 || back <= frame || !guest_memory_committed(back, 8)) break;
         std::fprintf(stderr, "  0x%08X\n", ppc::ld32(guest_base(), back + 4));
         frame = back;
     }
 }
 
-void fault_handler(int signal, siginfo_t* info, void* context) {
-    const auto host = reinterpret_cast<uintptr_t>(info->si_addr);
+void report_fault(uintptr_t host_address, uintptr_t pc, unsigned long code) {
     const auto base = reinterpret_cast<uintptr_t>(guest_base());
-    if (base != 0 && host >= base && host - base < (uint64_t{1} << 32) + 0x10000) {
-        const uint64_t guest = host - base;
+    if (base != 0 && host_address >= base && host_address - base < (uint64_t{1} << 32) + 0x10000) {
+        const uint64_t guest = host_address - base;
         std::fprintf(stderr, "\nguest memory fault: access to unmapped guest address 0x%08llX\n",
                      static_cast<unsigned long long>(guest));
-        // Just below the stack pointer: a frame larger than the stack left.
         if (t_current != nullptr && guest < t_current->r[1] && t_current->r[1] - guest <= (4u << 20)) {
             std::fprintf(stderr, "(0x%llX bytes below the stack pointer: a stack overflow)\n",
                          static_cast<unsigned long long>(t_current->r[1] - guest));
         }
     } else {
-        std::fprintf(stderr, "\nhost fault (signal %d) at %p\n", signal, info->si_addr);
+        std::fprintf(stderr, "\nhost fault 0x%08lX at %p\n", code,
+                     reinterpret_cast<void*>(host_address));
     }
-    // Where in the recompiled code: `addr2line -f -e <executable> <offset>`
-    // names the guest function (sub_XXXXXXXX).
-    const auto* uc = static_cast<const ucontext_t*>(context);
-    const auto pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+#ifdef _WIN32
+    const auto module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    std::fprintf(stderr, "host code: %s+0x%llx\n",
+                 host::path_string(host::executable_path()).c_str(),
+                 static_cast<unsigned long long>(pc - module));
+#else
     Dl_info where{};
     if (dladdr(reinterpret_cast<void*>(pc), &where) && where.dli_fname != nullptr) {
         std::fprintf(stderr, "host code: %s+0x%llx\n", where.dli_fname,
                      static_cast<unsigned long long>(pc - reinterpret_cast<uintptr_t>(where.dli_fbase)));
     }
-    if (t_current != nullptr) {
-        print_guest_state(*t_current);
+#endif
+    if (t_current != nullptr) print_guest_state(*t_current);
+}
+
+#ifdef _WIN32
+LONG WINAPI fault_handler(EXCEPTION_POINTERS* exception) {
+    const DWORD code = exception->ExceptionRecord->ExceptionCode;
+    uintptr_t address = reinterpret_cast<uintptr_t>(exception->ExceptionRecord->ExceptionAddress);
+    if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) &&
+        exception->ExceptionRecord->NumberParameters >= 2) {
+        address = static_cast<uintptr_t>(exception->ExceptionRecord->ExceptionInformation[1]);
     }
+#if defined(_M_X64) || defined(__x86_64__)
+    const uintptr_t pc = static_cast<uintptr_t>(exception->ContextRecord->Rip);
+#else
+    const uintptr_t pc = reinterpret_cast<uintptr_t>(exception->ExceptionRecord->ExceptionAddress);
+#endif
+    report_fault(address, pc, code);
+    std::_Exit(70);
+}
+#else
+void fault_handler(int signal, siginfo_t* info, void* context) {
+    const auto* uc = static_cast<const ucontext_t*>(context);
+    const auto pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+    report_fault(reinterpret_cast<uintptr_t>(info->si_addr), pc, static_cast<unsigned long>(signal));
     std::_Exit(128 + signal);
 }
+#endif
 
 } // namespace
 
@@ -86,16 +113,15 @@ void fatal(const char* format, ...) {
     std::vfprintf(stderr, format, args);
     va_end(args);
     std::fprintf(stderr, "\n");
-    if (t_current != nullptr) {
-        print_guest_state(*t_current);
-    }
+    if (t_current != nullptr) print_guest_state(*t_current);
     std::fflush(stderr);
-    // Not exit(): other guest threads still use the objects static
-    // destructors would tear down.
     std::_Exit(70);
 }
 
 void install_fault_handler() {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(fault_handler);
+#else
     static char alternate_stack[64 * 1024];
     stack_t stack{};
     stack.ss_sp = alternate_stack;
@@ -106,11 +132,11 @@ void install_fault_handler() {
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigaction(SIGSEGV, &action, nullptr);
     sigaction(SIGBUS, &action, nullptr);
+#endif
 }
 
 } // namespace cafe
 
-// ------------------------------------------------- hooks for generated code
 extern "C" {
 
 void cafe_ppc_trap(cafe::PPCContext& ctx, uint32_t address) {
@@ -137,7 +163,6 @@ void cafe_ppc_bad_return(cafe::PPCContext& ctx, uint32_t expected) {
                 ctx.lr, expected);
 }
 
-// The Espresso time base runs at a quarter of the 248.625 MHz bus clock.
 uint64_t cafe_ppc_timebase(void) {
     static const auto start = std::chrono::steady_clock::now();
     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -150,8 +175,7 @@ uint64_t cafe_ppc_timebase(void) {
 
 void cafe_unimplemented_import(cafe::PPCContext& ctx, const char* module, const char* name) {
     cafe::set_current_context(&ctx);
-    cafe::fatal("the game called %s:%s, which the runtime does not implement yet", module,
-                name);
+    cafe::fatal("the game called %s:%s, which the runtime does not implement yet", module, name);
 }
 
 } // extern "C"

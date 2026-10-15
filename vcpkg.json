@@ -1,0 +1,12 @@
+{
+  "name": "ttt2-recompiled-host",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "openssl",
+    "sdl3",
+    "shaderc",
+    "vulkan-sdk-components",
+    "zlib",
+    "zstd"
+  ]
+}

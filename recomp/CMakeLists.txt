@@ -6,7 +6,7 @@ add_library(cafe_rpx STATIC src/rpx.cpp)
 target_include_directories(cafe_rpx PUBLIC src ${CMAKE_SOURCE_DIR}/runtime/include)
 target_compile_features(cafe_rpx PUBLIC cxx_std_20)
 target_link_libraries(cafe_rpx PUBLIC ZLIB::ZLIB)
-target_compile_options(cafe_rpx PRIVATE -Wall -Wextra -Wpedantic)
+ttt2_warnings(cafe_rpx)
 
 add_library(cafe_recomp STATIC
     src/ppc.cpp
@@ -14,16 +14,16 @@ add_library(cafe_recomp STATIC
     src/program.cpp
     src/codegen.cpp)
 target_link_libraries(cafe_recomp PUBLIC cafe_rpx)
-target_compile_options(cafe_recomp PRIVATE -Wall -Wextra -Wpedantic)
+ttt2_warnings(cafe_recomp)
 
 add_executable(cafe-census src/census.cpp)
 target_link_libraries(cafe-census PRIVATE cafe_recomp)
-target_compile_options(cafe-census PRIVATE -Wall -Wextra -Wpedantic)
+ttt2_warnings(cafe-census)
 
 add_executable(cafe-recomp src/recompile_main.cpp)
 target_link_libraries(cafe-recomp PRIVATE cafe_recomp OpenSSL::Crypto)
-target_compile_options(cafe-recomp PRIVATE -Wall -Wextra -Wpedantic)
+ttt2_warnings(cafe-recomp)
 
 add_executable(cafe-semgen src/semgen_main.cpp)
 target_link_libraries(cafe-semgen PRIVATE cafe_recomp)
-target_compile_options(cafe-semgen PRIVATE -Wall -Wextra -Wpedantic)
+ttt2_warnings(cafe-semgen)

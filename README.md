@@ -1,6 +1,6 @@
 # Tekken Tag 2 Recompiled
 
-An unofficial native Linux port of **Tekken Tag Tournament 2 Wii U Edition**,
+An unofficial native Linux and Windows 11 port of **Tekken Tag Tournament 2 Wii U Edition**,
 made by static recompilation: the game's PowerPC code is translated to C++
 ahead of time and runs as native x86-64 code on a reimplementation of the
 Wii U's system libraries. There is no CPU emulation; the game's GPU commands
@@ -54,7 +54,8 @@ Playable from boot through arcade mode. Not done yet: the Wii U GamePad's
 screen and speaker, online play, the software keyboard and error viewer
 screens, and audio effects the game does not seem to use. Only the European
 version with update 16 is supported (other versions have different code).
-Tested on Linux with an AMD GPU (RADV) under KDE Plasma (Wayland). Design
+The original runtime is tested on Linux with an AMD GPU (RADV) under KDE Plasma (Wayland);
+the Windows host layer is documented in [`docs/WINDOWS.md`](docs/WINDOWS.md). Design
 notes, measurements and milestones are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

@@ -7,6 +7,7 @@
 
 #include "host/audio.h"
 #include "host/window.h"
+#include "host/platform.h"
 #include "install.h"
 #include "title/presentation.h"
 
@@ -34,10 +35,9 @@ void usage(const char* argv0) {
                  "  GAME is the title's .wua archive, or a folder with code/,\n"
                  "  content/ and meta/; without it the installed game runs.\n"
                  "  --install copies the game, this executable and its icon into\n"
-                 "  FOLDER (chosen in a dialog when not given) and adds it to the\n"
-                 "  application menu; --update copies this executable into the\n"
-                 "  install after a rebuild. Saves go to $TTT2_SAVE_DIR, default\n"
-                 "  ~/.local/share/ttt2/save.\n",
+                 "  FOLDER (chosen in a dialog when not given); --update copies\n"
+                 "  this executable into the install after a rebuild. Saves go\n"
+                 "  to $TTT2_SAVE_DIR (or %%TTT2_SAVE_DIR%% on Windows).\n",
                  argv0, argv0, argv0);
 }
 
@@ -87,8 +87,7 @@ int main(int argc, char** argv) {
     if (const char* save = std::getenv("TTT2_SAVE_DIR")) {
         vfs::set_save_root(save);
     } else {
-        const char* home = std::getenv("HOME");
-        vfs::set_save_root(std::filesystem::path(home ? home : ".") / ".local/share/ttt2/save");
+        vfs::set_save_root(host::data_directory() / "ttt2" / "save");
     }
     const auto rpx = vfs::read_whole("/vol/code/Tekken.rpx");
     if (!rpx) fatal("the game source has no code/Tekken.rpx");
