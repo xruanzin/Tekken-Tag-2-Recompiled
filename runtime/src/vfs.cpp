@@ -459,7 +459,7 @@ Status make_dir(std::string_view path) {
     const fs::path host = host_resolve(g_save_root, r.save_parts);
     std::error_code ec;
     if (fs::exists(host, ec)) return kExists;
-    if (!fs::create_directory(host, ec)) return from_errno(ec.value());
+    if (!fs::create_directory(host, ec)) return from_error(ec);
     return kOk;
 }
 
