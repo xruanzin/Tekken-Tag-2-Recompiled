@@ -114,17 +114,14 @@ if (-not (Test-Path -LiteralPath $VcpkgGit)) {
     & git -C $VcpkgRoot remote add origin https://github.com/microsoft/vcpkg
 }
 
-$CurrentVcpkg = (& git -C $VcpkgRoot rev-parse HEAD 2>$null)
-if ($CurrentVcpkg -ne $VcpkgBaseline) {
-    Write-Host "==> Fetching pinned vcpkg $VcpkgBaseline"
-    & git -C $VcpkgRoot fetch --depth 1 origin $VcpkgBaseline
-    if ($LASTEXITCODE -ne 0) {
-        throw "vcpkg fetch failed"
-    }
-    & git -C $VcpkgRoot checkout --detach FETCH_HEAD
-    if ($LASTEXITCODE -ne 0) {
-        throw "vcpkg checkout failed"
-    }
+Write-Host "==> Fetching pinned vcpkg $VcpkgBaseline"
+& git -C $VcpkgRoot fetch --depth 1 origin $VcpkgBaseline
+if ($LASTEXITCODE -ne 0) {
+    throw "vcpkg fetch failed"
+}
+& git -C $VcpkgRoot checkout --detach FETCH_HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "vcpkg checkout failed"
 }
 
 $env:VCPKG_ROOT = $VcpkgRoot
