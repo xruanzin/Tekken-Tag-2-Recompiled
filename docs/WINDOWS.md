@@ -11,6 +11,17 @@ generated game code belong in Git.
 - Vulkan 1.3 driver with `VK_EXT_external_memory_host` and push descriptors
 - Current AMD, Intel or NVIDIA Vulkan driver
 
+## One-command local build
+
+Once you have extracted your own European v16 `Tekken.rpx`, the repository can generate the local C++ and build the final Windows executable without uploading game-derived files anywhere:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\build-windows.ps1 -Rpx "C:\path\to\Tekken.rpx"
+```
+
+The result is `build\windows\ttt2.exe`.
+
 ## Build requirements
 
 - Git, CMake, Ninja, Python 3
@@ -18,7 +29,7 @@ generated game code belong in Git.
 - vcpkg
 
 The included `vcpkg.json` supplies SDL3, shaderc, OpenSSL, zlib, zstd and the
-Vulkan SDK components. The documented triplet is static so the finished port does
+minimal Vulkan headers/loader package. The documented triplet is static so the finished port does
 not need SDL/shaderc DLLs beside the executable; the system Vulkan loader comes
 from the installed GPU driver.  `tools/setup_deps.py` still downloads the pinned
 ZArchive and AMD addrlib sources.
