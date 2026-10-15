@@ -11,12 +11,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <unordered_map>
 
 namespace cafe::os {
 namespace {
+
+namespace fsys = std::filesystem;
+
+std::string normalize_vfs_path(std::string_view raw) {
+    if (raw.empty()) return {};
+    fsys::path path{std::string(raw)};
+    return path.lexically_normal().generic_string();
+}
 
 std::mutex g_fs_mutex;
 
@@ -91,14 +100,15 @@ int32_t FSGetLastErrorCodeForViewer(GuestAddress client) {
 int32_t FSOpenFile(GuestAddress client, GuestAddress, uint32_t path, uint32_t mode,
                    be<int32_t>* handle, uint32_t mask) {
     int32_t h = -1;
-    const auto status = vfs::open_file(guest_string(path), guest_string(mode), h);
+    const std::string normalized = normalize_vfs_path(guest_string(path));
+    const auto status = vfs::open_file(normalized, guest_string(mode), h);
     if (status == vfs::kOk && handle) *handle = h;
     if (g_trace) {
-        const std::string_view name = guest_string(path);
+        const std::string_view name = normalized;
         std::fprintf(stderr, "fs: %8.3f open %.*s -> %d\n", seconds(), static_cast<int>(name.size()), name.data(),
                      status == vfs::kOk ? h : status);
     }
-    return finish(client, status, mask, "open", guest_string(path));
+    return finish(client, status, mask, "open", normalized);
 }
 
 int32_t read_common(GuestAddress client, uint8_t* destination, uint32_t size, uint32_t count,
@@ -163,9 +173,10 @@ int32_t FSCloseFile(GuestAddress client, GuestAddress, int32_t handle, uint32_t 
 
 int32_t FSGetStat(GuestAddress client, GuestAddress, uint32_t path, uint8_t* out, uint32_t mask) {
     vfs::Stat stat;
-    const auto status = vfs::stat_path(guest_string(path), stat);
+    const std::string normalized = normalize_vfs_path(guest_string(path));
+    const auto status = vfs::stat_path(normalized, stat);
     if (status == vfs::kOk && out) write_stat(out, stat);
-    return finish(client, status, mask, "stat", guest_string(path));
+    return finish(client, status, mask, "stat", normalized);
 }
 
 int32_t FSGetStatFile(GuestAddress client, GuestAddress, int32_t handle, uint8_t* out, uint32_t mask) {
@@ -177,9 +188,10 @@ int32_t FSGetStatFile(GuestAddress client, GuestAddress, int32_t handle, uint8_t
 
 int32_t FSOpenDir(GuestAddress client, GuestAddress, uint32_t path, be<int32_t>* handle, uint32_t mask) {
     int32_t h = -1;
-    const auto status = vfs::open_dir(guest_string(path), h);
+    const std::string normalized = normalize_vfs_path(guest_string(path));
+    const auto status = vfs::open_dir(normalized, h);
     if (status == vfs::kOk && handle) *handle = h;
-    return finish(client, status, mask, "opendir", guest_string(path));
+    return finish(client, status, mask, "opendir", normalized);
 }
 
 // FSDirEntry: FSStat (0x64) then the name (128 bytes).
@@ -215,7 +227,8 @@ int32_t SAVEInitSaveDir(uint8_t slot) {
 
 int32_t SAVEOpenFile(GuestAddress client, GuestAddress block, uint8_t slot, uint32_t path, uint32_t mode,
                      be<int32_t>* handle, uint32_t mask) {
-    const std::string full = "/vol/save/" + save_directory(slot) + "/" + std::string(guest_string(path));
+    const std::string relative = normalize_vfs_path(guest_string(path));
+    const std::string full = normalize_vfs_path("/vol/save/" + save_directory(slot) + "/" + relative);
     int32_t h = -1;
     const auto status = vfs::open_file(full, guest_string(mode), h);
     if (status == vfs::kOk && handle) *handle = h;
