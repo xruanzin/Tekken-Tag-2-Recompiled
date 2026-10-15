@@ -45,11 +45,18 @@ function Import-VsDevEnvironment {
 }
 
 $OriginalPath = $env:Path
-Import-VsDevEnvironment
-
 $System32 = Join-Path $env:SystemRoot "System32"
 $WindowsPowerShell = Join-Path $System32 "WindowsPowerShell\v1.0"
+
+# VsDevCmd.bat itself calls Windows utilities such as findstr, so make the
+# Windows system directories visible before importing the VS environment.
+$env:Path = "$WindowsPowerShell;$System32;$OriginalPath"
+Import-VsDevEnvironment
 $env:Path = "$WindowsPowerShell;$System32;$env:Path;$OriginalPath"
+
+if (-not (Get-Command findstr.exe -ErrorAction SilentlyContinue)) {
+    throw "Windows findstr.exe was not found in PATH."
+}
 
 if (-not (Get-Command powershell.exe -ErrorAction SilentlyContinue)) {
     throw "Windows PowerShell 5.1 (powershell.exe) was not found; vcpkg bootstrap requires it."
