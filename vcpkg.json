@@ -8,5 +8,6 @@
     "vulkan",
     "zlib",
     "zstd"
-  ]
+  ],
+  "builtin-baseline": "c52f7bd748185ef0e0daf033d9f2ddfc8a3449ea"
 }

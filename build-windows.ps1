@@ -44,7 +44,9 @@ function Import-VsDevEnvironment {
     }
 }
 
+$OriginalPath = $env:Path
 Import-VsDevEnvironment
+$env:Path = "$env:Path;$OriginalPath"
 
 if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
     $DefaultLlvmBin = "C:\Program Files\LLVM\bin"
@@ -87,6 +89,7 @@ Require-Command cmake
 Require-Command ninja
 Require-Command clang-cl
 
+$NinjaExe = (Get-Command ninja -ErrorAction Stop).Source
 $BuildPath = Join-Path $Root $BuildDir
 $GeneratedPath = Join-Path $Root $GeneratedDir
 
@@ -100,20 +103,31 @@ if ($LASTEXITCODE -ne 0) {
     throw "tools/setup_deps.py failed"
 }
 
-if ($env:VCPKG_ROOT) {
-    $VcpkgRoot = $env:VCPKG_ROOT
-} else {
-    $VcpkgRoot = Join-Path $Root ".tools/vcpkg"
-    if (-not (Test-Path -LiteralPath (Join-Path $VcpkgRoot ".git"))) {
-        New-Item -ItemType Directory -Force (Split-Path -Parent $VcpkgRoot) | Out-Null
-        Write-Host "==> Cloning vcpkg"
-        & git clone --depth 1 https://github.com/microsoft/vcpkg $VcpkgRoot
-        if ($LASTEXITCODE -ne 0) {
-            throw "vcpkg clone failed"
-        }
+$VcpkgBaseline = "c52f7bd748185ef0e0daf033d9f2ddfc8a3449ea"
+$VcpkgRoot = Join-Path $Root ".tools/vcpkg"
+$VcpkgGit = Join-Path $VcpkgRoot ".git"
+
+if (-not (Test-Path -LiteralPath $VcpkgGit)) {
+    New-Item -ItemType Directory -Force $VcpkgRoot | Out-Null
+    Write-Host "==> Initializing pinned vcpkg"
+    & git -C $VcpkgRoot init --quiet
+    & git -C $VcpkgRoot remote add origin https://github.com/microsoft/vcpkg
+}
+
+$CurrentVcpkg = (& git -C $VcpkgRoot rev-parse HEAD 2>$null)
+if ($CurrentVcpkg -ne $VcpkgBaseline) {
+    Write-Host "==> Fetching pinned vcpkg $VcpkgBaseline"
+    & git -C $VcpkgRoot fetch --depth 1 origin $VcpkgBaseline
+    if ($LASTEXITCODE -ne 0) {
+        throw "vcpkg fetch failed"
+    }
+    & git -C $VcpkgRoot checkout --detach FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) {
+        throw "vcpkg checkout failed"
     }
 }
 
+$env:VCPKG_ROOT = $VcpkgRoot
 $VcpkgExe = Join-Path $VcpkgRoot "vcpkg.exe"
 if (-not (Test-Path -LiteralPath $VcpkgExe)) {
     Write-Host "==> Bootstrapping vcpkg"
@@ -129,6 +143,7 @@ $CommonArgs = @(
     "-S", $Root,
     "-B", $BuildPath,
     "-G", "Ninja",
+    "-DCMAKE_MAKE_PROGRAM=$NinjaExe",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_C_COMPILER=clang-cl",
     "-DCMAKE_CXX_COMPILER=clang-cl",
