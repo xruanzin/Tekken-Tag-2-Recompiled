@@ -342,7 +342,7 @@ void Renderer::save_image(const Image& img, const std::string& path) {
     barrier();
     VkBufferImageCopy region{};
     region.bufferOffset = offset;
-    region.imageSubresource = {depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageSubresource = {static_cast<VkImageAspectFlags>(depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
     region.imageExtent = {img.width, img.height, 1};
     vkCmdCopyImageToBuffer(cmd(), img.image, VK_IMAGE_LAYOUT_GENERAL, ring_.buffer(), 1, &region);
     submit(true);
