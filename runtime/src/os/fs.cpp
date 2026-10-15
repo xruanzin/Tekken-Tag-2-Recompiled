@@ -92,9 +92,11 @@ int32_t FSGetLastError(GuestAddress client) {
     return it == g_last_status.end() ? 0 : it->second;
 }
 
-int32_t FSGetLastErrorCodeForViewer(GuestAddress client) {
-    // Error codes shown to the user; 0 means "no error to show".
-    return FSGetLastError(client) < 0 ? 1503100 : 0;
+int32_t FSGetLastErrorCodeForViewer(GuestAddress) {
+    // Cemu's implementation returns no viewer error here.  The title performs
+    // ordinary masked probes for files that may not exist; translating any
+    // such status into 150-3100 produces a spurious ErrEula screen.
+    return 0;
 }
 
 int32_t FSOpenFile(GuestAddress client, GuestAddress, uint32_t path, uint32_t mode,
