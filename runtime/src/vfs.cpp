@@ -183,7 +183,12 @@ Status list_game_host(const std::string& relative, Dir& dir) {
             if (!seen.insert(key).second) continue;
             DirEntry e;
             e.name = entry.path().filename().string();
-            stat_host(entry.path(), e.stat);
+            std::error_code entry_ec;
+            const fs::file_status entry_status = fs::status(entry.path(), entry_ec);
+            if (entry_ec) continue;
+            e.stat.directory = fs::is_directory(entry_status);
+            e.stat.size = e.stat.directory ? 0 : fs::file_size(entry.path(), entry_ec);
+            if (entry_ec) continue;
             dir.entries.push_back(std::move(e));
         }
     }

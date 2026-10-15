@@ -83,8 +83,8 @@ const char* kHeader =
 int run(const Options& options) {
     const auto started = std::chrono::steady_clock::now();
     const std::string digest = sha256_file(options.rpx);
-    const bool supported = std::any_of(std::begin(kSupportedRpx), std::end(kSupportedRpx),
-                                       [&](const char* known) { return digest == known; });
+    bool supported = false;
+    for (const char* known : kSupportedRpx) supported = supported || digest == known;
     if (!supported && !options.any_rpx) {
         throw std::runtime_error(options.rpx.string() +
                                  " is not a known TEKKEN TAG TOURNAMENT 2 Wii U EDITION (EU) executable (sha256 " +
