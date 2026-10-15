@@ -43,7 +43,10 @@ struct DirEntry {
 };
 
 // `source` is a .wua file or a directory holding code/, content/, meta/.
-void open_game(const std::filesystem::path& source);
+// When `update` is given for directory sources, its files override the base
+// directory while missing files fall back to `source`, matching Wii U/Cemu layering.
+void open_game(const std::filesystem::path& source,
+               const std::optional<std::filesystem::path>& update = std::nullopt);
 void set_save_root(const std::filesystem::path& root);
 
 // The title's archive `archive` ("content/hdd/data003": its .ofs and .bin

@@ -59,9 +59,12 @@ bool write_if_changed(const fs::path& path, const std::string& content) {
     return true;
 }
 
-// The executable the runtime is written for: TEKKEN TAG 2 Wii U EDITION,
-// Europe, update 16 (other versions differ in code and data layout).
-constexpr const char* kSupportedRpx = "fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019";
+// Known European executables.  The retail/base title is version 16 and the
+// only public update for 0005000E1010F800 is version 32.
+constexpr const char* kSupportedRpx[] = {
+    "fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019", // base v16
+    "c3afc72f30aa1af84901bfc0775aeae7a359d396923a387cfbe71034175886ab", // update v32
+};
 
 struct Options {
     fs::path rpx;
@@ -80,9 +83,12 @@ const char* kHeader =
 int run(const Options& options) {
     const auto started = std::chrono::steady_clock::now();
     const std::string digest = sha256_file(options.rpx);
-    if (digest != kSupportedRpx && !options.any_rpx) {
-        throw std::runtime_error(options.rpx.string() + " is not the Tekken.rpx of TEKKEN TAG 2 Wii U EDITION (EU) v16 (sha256 " +
-                                 digest + "), the version the runtime is written for; --any-rpx translates it anyway");
+    const bool supported = std::any_of(std::begin(kSupportedRpx), std::end(kSupportedRpx),
+                                       [&](const char* known) { return digest == known; });
+    if (!supported && !options.any_rpx) {
+        throw std::runtime_error(options.rpx.string() +
+                                 " is not a known TEKKEN TAG TOURNAMENT 2 Wii U EDITION (EU) executable (sha256 " +
+                                 digest + "); --any-rpx translates it anyway");
     }
     const recomp::Program program = recomp::Program::analyze(rpx::load(options.rpx));
 

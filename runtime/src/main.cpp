@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -29,11 +30,12 @@ namespace {
 
 void usage(const char* argv0) {
     std::fprintf(stderr,
-                 "usage: %s [GAME]\n"
+                 "usage: %s [GAME [UPDATE]]\n"
                  "       %s --install [GAME [FOLDER]] [--no-launcher]\n"
                  "       %s --update [FOLDER]\n"
                  "  GAME is the title's .wua archive, or a folder with code/,\n"
-                 "  content/ and meta/; without it the installed game runs.\n"
+                 "  content/ and meta/. UPDATE may be a separate extracted update\n"
+                 "  folder whose files override GAME; without GAME the installed game runs.\n"
                  "  --install copies the game, this executable and its icon into\n"
                  "  FOLDER (chosen in a dialog when not given); --update copies\n"
                  "  this executable into the install after a rebuild. Saves go\n"
@@ -74,8 +76,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     std::filesystem::path game;
-    if (argc == 2) {
+    std::optional<std::filesystem::path> update;
+    if (argc == 2 || argc == 3) {
         game = argv[1];
+        if (argc == 3) update = std::filesystem::path(argv[2]);
     } else if (const auto installed = install::installed_game(); argc == 1 && installed) {
         game = *installed;
     } else {
@@ -83,7 +87,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     install_fault_handler();
-    vfs::open_game(game);
+    vfs::open_game(game, update);
     if (const char* save = std::getenv("TTT2_SAVE_DIR")) {
         vfs::set_save_root(save);
     } else {

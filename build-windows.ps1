@@ -107,22 +107,26 @@ if (-not $VsInstall) {
 Write-Host "    VS tools: $VsInstall"
 
 $RpxPath = (Resolve-Path -LiteralPath $Rpx).Path
-$ExpectedRpxSha256 = "fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019"
+$BaseV16RpxSha256 = "fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019"
+$UpdateV32RpxSha256 = "c3afc72f30aa1af84901bfc0775aeae7a359d396923a387cfbe71034175886ab"
 $ActualRpxSha256 = (Get-FileHash -LiteralPath $RpxPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
-if ($ActualRpxSha256 -ne $ExpectedRpxSha256) {
+if ($ActualRpxSha256 -eq $BaseV16RpxSha256) {
+    $RpxVersion = "European base v16"
+} elseif ($ActualRpxSha256 -eq $UpdateV32RpxSha256) {
+    $RpxVersion = "European update v32"
+} else {
     throw @"
 Unsupported Tekken.rpx.
 
-This port requires the European v16 executable:
-  Base title ID:   000500001010F800
-  Update title ID: 0005000E1010F800
-  Expected SHA256: $ExpectedRpxSha256
-  Your SHA256:     $ActualRpxSha256
+Known European executables:
+  Base v16 SHA256:   $BaseV16RpxSha256
+  Update v32 SHA256: $UpdateV32RpxSha256
+  Your SHA256:       $ActualRpxSha256
 "@
 }
 
-Write-Host "==> RPX verified: European v16"
+Write-Host "==> RPX verified: $RpxVersion"
 
 $BuildPath = Join-Path $Root $BuildDir
 $GeneratedPath = Join-Path $Root $GeneratedDir
@@ -256,4 +260,4 @@ if (-not (Test-Path -LiteralPath $Exe)) {
 Write-Host ""
 Write-Host "SUCCESS"
 Write-Host "Executable: $Exe"
-Write-Host "Run it with your own .wua or extracted European v16 title folder."
+Write-Host "Run it with your own .wua, or with extracted BASE and optional UPDATE folders."
