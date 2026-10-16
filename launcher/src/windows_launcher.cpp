@@ -555,7 +555,7 @@ const wchar_t* ready_game_text() {
 fs::path find_game_executable() {
     const std::array<fs::path, 4> candidates = {
         // Packaged releases follow the same layout as the GOW3 Windows port:
-        // launcher in the root, generic runtime in bin/.
+        // launcher in the root, prebuilt static AOT runtime in bin/.
         g_root / L"bin" / L"ttt2-runtime.exe",
         // Development/legacy fallbacks.
         g_root / L"ttt2.exe",
