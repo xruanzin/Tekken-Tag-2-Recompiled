@@ -16,4 +16,9 @@ namespace cafe::title {
 // After vfs::open_game and the image load, before the title runs.
 void prepare_presentation();
 
+// Native hook used after the title creates its system-settings object.
+// Static recompilation calls it from the generated-function override; the
+// zero-install backend invokes it from its dynamic function hook.
+void system_info_created(uint32_t info);
+
 } // namespace cafe::title
