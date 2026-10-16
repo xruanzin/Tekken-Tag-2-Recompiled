@@ -1016,7 +1016,7 @@ bool init_window() {
     WNDCLASSEXW page_class{sizeof(page_class)};
     page_class.lpfnWndProc = page_proc;
     page_class.hInstance = g_instance;
-    page_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    page_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     page_class.hbrBackground = g_panel_brush;
     page_class.lpszClassName = L"TTT2LauncherPage";
     if (!RegisterClassExW(&page_class)) return false;
@@ -1025,7 +1025,7 @@ bool init_window() {
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = window_proc;
     wc.hInstance = g_instance;
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     wc.hIcon = LoadIconW(g_instance, MAKEINTRESOURCEW(1));
     wc.hIconSm = wc.hIcon;
     wc.hbrBackground = g_bg_brush;
