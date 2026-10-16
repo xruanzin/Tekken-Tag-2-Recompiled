@@ -31,6 +31,23 @@ uint64_t fnv(const void* data, size_t size, uint64_t h = 0xCBF29CE484222325ull) 
     return h;
 }
 
+bool performance_spirv(const Context& ctx) {
+#ifdef _WIN32
+    return ctx.properties.vendorID == 0x1002 &&
+           ctx.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#else
+    (void)ctx;
+    return false;
+#endif
+}
+
+uint64_t spirv_cache_key(uint64_t glsl_hash, bool optimized) {
+    // Keep performance-optimized SPIR-V separate from older zero-opt cache
+    // entries so an upgraded build cannot silently reuse slower shaders.
+    const uint64_t version = optimized ? 0x5350565F50455246ull : 0x5350565F5A45524Full;
+    return fnv(&version, sizeof(version), glsl_hash);
+}
+
 double compile_now_ms() {
     return std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -316,7 +333,9 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
         std::ofstream(std::filesystem::path(dir) / name) << entry->info.glsl;
     }
     // SPIR-V is cached on disk by the GLSL it came from.
-    const uint64_t glsl_hash = fnv(entry->info.glsl.data(), entry->info.glsl.size());
+    const uint64_t glsl_source_hash = fnv(entry->info.glsl.data(), entry->info.glsl.size());
+    const bool optimize_spirv = performance_spirv(ctx_);
+    const uint64_t glsl_hash = spirv_cache_key(glsl_source_hash, optimize_spirv);
     std::vector<uint32_t> spirv = load_cached_spirv(glsl_hash);
     if (spirv.empty() && async_shaders_) {
         entry->state.store(1, std::memory_order_release);
@@ -342,8 +361,12 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
         const double compile_begin = compile_now_ms();
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-        // The driver optimises; SPIR-V optimisation only costs compile time.
-        shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_zero);
+        // AMD integrated GPUs benefit from simplifying the translated
+        // shader before it reaches the driver. The extra compile time is paid
+        // once and the resulting SPIR-V is persisted in the shader cache.
+        shaderc_compile_options_set_optimization_level(
+            options, optimize_spirv ? shaderc_optimization_level_performance
+                                    : shaderc_optimization_level_zero);
         shaderc_compilation_result_t result = shaderc_compile_into_spv(
             compiler_, entry->info.glsl.data(), entry->info.glsl.size(),
             stage == Stage::kVertex ? shaderc_vertex_shader : shaderc_fragment_shader, kind, "main", options);
@@ -380,6 +403,9 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
 void Renderer::shader_worker_main() {
     host::set_thread_name("shader-compile");
     host::set_thread_low_priority();
+    if (performance_spirv(ctx_)) {
+        cafe::diagnostic_trace("GPU SPIR-V optimization=performance");
+    }
     shaderc_compiler_t compiler = shaderc_compiler_initialize();
     for (;;) {
         ShaderCompileTask task;
@@ -395,7 +421,9 @@ void Renderer::shader_worker_main() {
         const double begin = compile_now_ms();
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-        shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_zero);
+        shaderc_compile_options_set_optimization_level(
+            options, performance_spirv(ctx_) ? shaderc_optimization_level_performance
+                                             : shaderc_optimization_level_zero);
         shaderc_compilation_result_t result = shaderc_compile_into_spv(
             compiler, task.glsl.data(), task.glsl.size(),
             task.stage == Stage::kVertex ? shaderc_vertex_shader : shaderc_fragment_shader,
