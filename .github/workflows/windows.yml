@@ -78,14 +78,29 @@ jobs:
       - name: Run data-independent tests
         run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test"
 
+      - name: Stage GOW3-style Windows preview
+        shell: pwsh
+        run: |
+          $PreviewRoot = Join-Path $env:GITHUB_WORKSPACE "build\preview"
+          $Package = Join-Path $PreviewRoot "ttt2-windows"
+          $Bin = Join-Path $Package "bin"
+          New-Item -ItemType Directory -Force $Bin | Out-Null
+
+          Copy-Item "build\windows\Tekken Tag Tournament 2.exe" (Join-Path $Package "Tekken Tag Tournament 2.exe") -Force
+          Copy-Item "build\windows\Play Tekken Tag Tournament 2.exe" (Join-Path $Package "Play Tekken Tag Tournament 2.exe") -Force
+          Copy-Item "build\windows\ttt2.exe" (Join-Path $Bin "ttt2-runtime.exe") -Force
+          Copy-Item "README-Windows.txt" (Join-Path $Package "README-Windows.txt") -Force
+          Copy-Item "LICENSE" (Join-Path $Package "LICENSE") -Force
+
+          $Zip = Join-Path $PreviewRoot "TTT2-Windows-Test.zip"
+          if (Test-Path -LiteralPath $Zip) { Remove-Item -LiteralPath $Zip -Force }
+          Compress-Archive -Path $Package -DestinationPath $Zip -CompressionLevel Optimal
+
       - name: Upload ready-to-run Windows preview
         uses: actions/upload-artifact@v4
         with:
           name: TTT2-Windows-Preview
-          path: |
-            build/windows/Tekken Tag Tournament 2.exe
-            build/windows/Play Tekken Tag Tournament 2.exe
-            build/windows/ttt2.exe
+          path: build/preview/TTT2-Windows-Test.zip
           if-no-files-found: error
           retention-days: 30
 
