@@ -20,6 +20,11 @@ void initialize_data_imports();
 // native runtime.
 void execute(PPCContext& ctx, uint8_t* base, uint32_t entry);
 
+// Differential-test entry point: executes exactly one decoded guest
+// instruction and returns the next guest address.
+uint32_t execute_test_instruction(PPCContext& ctx, uint8_t* base,
+                                  uint32_t address, uint32_t word);
+
 // Prints the current thread's most recent guest instructions. This is kept
 // allocation-free so crash/fatal diagnostics can use it safely.
 void print_recent_trace();
