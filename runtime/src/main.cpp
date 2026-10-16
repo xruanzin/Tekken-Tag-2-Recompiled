@@ -145,12 +145,6 @@ int main(int argc, char** argv) {
     if (!rpx) fatal("the game source has no code/Tekken.rpx");
 
     if (verify_only) {
-        if (cafe_program_info.compiled_entries == 0) {
-            std::fprintf(stderr,
-                         "ttt2: this executable is the experimental dynamic host, not the "
-                         "static player runtime\n");
-            return 5;
-        }
         const std::string digest = sha256_hex(*rpx);
         if (digest != cafe_program_info.rpx_sha256) {
             std::fprintf(stderr,
@@ -163,10 +157,17 @@ int main(int argc, char** argv) {
         try {
             const cafe::rpx::Image parsed = cafe::rpx::load(*rpx);
             std::fprintf(stderr,
-                         "ttt2: recognized supported EU v16 game: entry 0x%08X, %zu imports\n"
-                         "ttt2: static AOT player runtime: %zu/%zu guest entries compiled\n",
-                         parsed.entry_point, parsed.imports.size(),
-                         cafe_program_info.compiled_entries, cafe_program_info.total_entries);
+                         "ttt2: recognized supported EU v16 game: entry 0x%08X, %zu imports\n",
+                         parsed.entry_point, parsed.imports.size());
+            if (cafe_program_info.compiled_entries != 0) {
+                std::fprintf(stderr,
+                             "ttt2: static AOT runtime: %zu/%zu guest entries compiled\n",
+                             cafe_program_info.compiled_entries,
+                             cafe_program_info.total_entries);
+            } else {
+                std::fprintf(stderr,
+                             "ttt2: generic runtime: PowerPC code will be translated at run time\n");
+            }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "ttt2: invalid Tekken.rpx: %s\n", error.what());
             return 4;
