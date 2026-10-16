@@ -10,9 +10,10 @@ Unofficial **Windows 11 port** of the original Linux static-recompilation projec
 
 This fork keeps the original project's native Windows runtime and Vulkan GX2 implementation,
 while providing two execution paths. Developer builds can still use the original ahead-of-time
-PowerPC-to-C++ recompiler; public Windows releases use a generic zero-install host that reads
-the user's supported RPX at run time, predecodes guest code and dispatches it through the native
-runtime. This removes the end user's C++ build/toolchain step.
+PowerPC-to-C++ recompiler; public Windows releases use a generic zero-install host that reads the user's supported RPX at
+run time. It predecodes guest code, groups hot control flow into cached blocks and uses an
+on-demand baseline x86-64 block JIT before dispatching through the native runtime. This removes
+the end user's C++ build/toolchain step.
 
 > [!IMPORTANT]
 > **No game files are included.** You must provide your own legally obtained copy of
@@ -154,9 +155,11 @@ Launcher artwork and launcher-specific code live together under
 
 ## Performance and caches
 
-The Windows fork keeps reusable shader, Vulkan pipeline and detiled-texture caches. The first
-run through a stage or character combination can still be less smooth while new work is being
-compiled. Repeated content should reuse more cached data.
+The Windows fork keeps reusable shader, Vulkan pipeline, detiled-texture and dynamic code-block
+caches. The generic host starts immediately without a local C++ build; blocks reached at run
+time are remembered and warmed on later launches. The first run through a stage or character
+combination can still be less smooth while new graphics work is being compiled. Repeated
+content should reuse more cached data.
 
 For performance reports, include the runtime log and describe the exact match, stage and action
 that caused the hitch. Do **not** attach game data.
