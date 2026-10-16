@@ -30,6 +30,8 @@
 #include <future>
 #include <functional>
 #include <mutex>
+#include <unordered_map>
+#include <memory>
 #include <thread>
 #include <set>
 #include <string>
@@ -64,7 +66,97 @@ uint64_t hash_bytes(const uint8_t* data, size_t size) {
 constexpr uint32_t kTextureCacheMagic = 0x32585454u; // "TTX2"
 constexpr uint32_t kTextureCacheVersion = 2;
 constexpr uint64_t kMaxCachedTextureBytes = 64ull << 20;
-constexpr uint64_t kMaxQueuedTextureCacheBytes = 96ull << 20;
+constexpr uint64_t kMiB = 1ull << 20;
+constexpr uint64_t kGiB = 1ull << 30;
+
+uint64_t texture_ram_cache_budget() {
+    const uint64_t total = host::system_memory_total_bytes();
+    const uint64_t available = host::system_memory_available_bytes();
+
+    uint64_t target = 64ull * kMiB;
+    if (total >= 8ull * kGiB) target = 128ull * kMiB;
+    if (total >= 12ull * kGiB) target = 256ull * kMiB;
+    if (total >= 16ull * kGiB) target = 384ull * kMiB;
+    if (total >= 24ull * kGiB) target = 512ull * kMiB;
+    if (total >= 32ull * kGiB) target = 768ull * kMiB;
+    if (total >= 48ull * kGiB) target = 1024ull * kMiB;
+
+    // Keep a large safety margin for the title, driver and Windows. The cache
+    // grows with capable systems but backs off automatically under pressure.
+    if (available != 0) target = std::min<uint64_t>(target, std::max<uint64_t>(64ull * kMiB, available / 6));
+    return target;
+}
+
+uint64_t texture_cache_writer_budget() {
+    return std::clamp<uint64_t>(texture_ram_cache_budget() / 2, 64ull * kMiB, 256ull * kMiB);
+}
+
+class TextureRamCache {
+public:
+    TextureRamCache() : budget_(texture_ram_cache_budget()) {
+        char info[160]{};
+        std::snprintf(info, sizeof(info), "MEMORY texture_ram_cache=%lluMB texture_write_queue=%lluMB",
+                      static_cast<unsigned long long>(budget_ >> 20),
+                      static_cast<unsigned long long>(texture_cache_writer_budget() >> 20));
+        cafe::diagnostic_trace(info);
+    }
+
+    std::shared_ptr<const std::vector<uint8_t>> find(uint64_t key, size_t expected) {
+        std::lock_guard lock(mutex_);
+        auto it = entries_.find(key);
+        if (it == entries_.end()) return {};
+        if (!it->second.payload || it->second.payload->size() != expected) {
+            bytes_ -= it->second.payload ? it->second.payload->size() : 0;
+            entries_.erase(it);
+            return {};
+        }
+        it->second.stamp = ++clock_;
+        return it->second.payload;
+    }
+
+    std::shared_ptr<const std::vector<uint8_t>> insert(uint64_t key, std::vector<uint8_t>&& payload) {
+        auto shared = std::make_shared<const std::vector<uint8_t>>(std::move(payload));
+        if (shared->empty() || shared->size() > kMaxCachedTextureBytes || budget_ == 0) return shared;
+
+        std::lock_guard lock(mutex_);
+        if (auto old = entries_.find(key); old != entries_.end()) {
+            bytes_ -= old->second.payload ? old->second.payload->size() : 0;
+            entries_.erase(old);
+        }
+
+        while (!entries_.empty() && bytes_ + shared->size() > budget_) {
+            auto victim = entries_.begin();
+            for (auto it = std::next(entries_.begin()); it != entries_.end(); ++it) {
+                if (it->second.stamp < victim->second.stamp) victim = it;
+            }
+            bytes_ -= victim->second.payload ? victim->second.payload->size() : 0;
+            entries_.erase(victim);
+        }
+
+        if (shared->size() <= budget_) {
+            bytes_ += shared->size();
+            entries_.emplace(key, Entry{shared, ++clock_});
+        }
+        return shared;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<const std::vector<uint8_t>> payload;
+        uint64_t stamp = 0;
+    };
+
+    std::mutex mutex_;
+    std::unordered_map<uint64_t, Entry> entries_;
+    uint64_t budget_ = 0;
+    uint64_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+TextureRamCache& texture_ram_cache() {
+    static TextureRamCache cache;
+    return cache;
+}
 
 struct TextureCacheHeader {
     uint32_t magic = kTextureCacheMagic;
@@ -130,11 +222,14 @@ public:
         if (thread_.joinable()) thread_.join();
     }
 
-    void enqueue(uint64_t key, std::vector<uint8_t>&& payload) {
-        if (texture_cache_directory().empty() || payload.empty() || payload.size() > kMaxCachedTextureBytes) return;
+    void enqueue(uint64_t key, std::shared_ptr<const std::vector<uint8_t>> payload) {
+        if (texture_cache_directory().empty() || !payload || payload->empty() ||
+            payload->size() > kMaxCachedTextureBytes) {
+            return;
+        }
         std::lock_guard lock(mutex_);
-        if (queued_bytes_ + payload.size() > kMaxQueuedTextureCacheBytes) return;
-        queued_bytes_ += payload.size();
+        if (queued_bytes_ + payload->size() > texture_cache_writer_budget()) return;
+        queued_bytes_ += payload->size();
         queue_.push_back({key, std::move(payload)});
         cv_.notify_one();
     }
@@ -142,7 +237,7 @@ public:
 private:
     struct Item {
         uint64_t key;
-        std::vector<uint8_t> payload;
+        std::shared_ptr<const std::vector<uint8_t>> payload;
     };
 
     void run() {
@@ -155,20 +250,21 @@ private:
                 cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
                 if (stop_ && queue_.empty()) return;
                 item = std::move(queue_.front());
-                queued_bytes_ -= item.payload.size();
+                queued_bytes_ -= item.payload ? item.payload->size() : 0;
                 queue_.pop_front();
             }
             const std::filesystem::path path = texture_cache_path(item.key);
             const std::filesystem::path temporary = path.string() + ".tmp";
             TextureCacheHeader header{};
             header.key = item.key;
-            header.payload_size = item.payload.size();
-            header.payload_hash = hash_bytes(item.payload.data(), item.payload.size());
+            if (!item.payload) continue;
+            header.payload_size = item.payload->size();
+            header.payload_hash = hash_bytes(item.payload->data(), item.payload->size());
             {
                 std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
                 out.write(reinterpret_cast<const char*>(&header), sizeof(header));
-                out.write(reinterpret_cast<const char*>(item.payload.data()),
-                          static_cast<std::streamsize>(item.payload.size()));
+                out.write(reinterpret_cast<const char*>(item.payload->data()),
+                          static_cast<std::streamsize>(item.payload->size()));
                 if (!out) {
                     std::error_code ec;
                     std::filesystem::remove(temporary, ec);
@@ -712,10 +808,19 @@ void Renderer::load_texture(Texture& t) {
 
     const bool filtered_level0 = hw == fmt::k8 && !linear.empty() && linear[0].slices == 1 && plane_filter;
     const uint64_t cache_key = texture_cache_key(h, r, s, filtered_level0);
-    std::vector<uint8_t> cached_linear;
+    std::shared_ptr<const std::vector<uint8_t>> cached_linear;
     const bool cache_eligible = total_linear_bytes != 0 && total_linear_bytes <= kMaxCachedTextureBytes &&
                                 t.replacement < 0;
-    const bool cache_hit = cache_eligible && load_texture_cache(cache_key, total_linear_bytes, cached_linear);
+    if (cache_eligible) {
+        cached_linear = texture_ram_cache().find(cache_key, total_linear_bytes);
+        if (!cached_linear) {
+            std::vector<uint8_t> disk_payload;
+            if (load_texture_cache(cache_key, total_linear_bytes, disk_payload)) {
+                cached_linear = texture_ram_cache().insert(cache_key, std::move(disk_payload));
+            }
+        }
+    }
+    const bool cache_hit = static_cast<bool>(cached_linear);
 
     if (!cache_hit) {
         // Large mip levels use a persistent low-priority pool, avoiding
@@ -763,7 +868,7 @@ void Renderer::load_texture(Texture& t) {
         PreparedLevel& p = linear[level];
         VkDeviceSize offset = 0;
         uint8_t* staging = upload(p.bytes, 16, offset);
-        const uint8_t* source = cache_hit ? cached_linear.data() + linear_offset : p.data.data();
+        const uint8_t* source = cache_hit ? cached_linear->data() + linear_offset : p.data.data();
         std::memcpy(staging, source, p.bytes);
 
         VkBufferImageCopy region{};
@@ -784,7 +889,8 @@ void Renderer::load_texture(Texture& t) {
             std::memcpy(payload.data() + cursor, p.data.data(), p.bytes);
             cursor += p.bytes;
         }
-        texture_cache_writer().enqueue(cache_key, std::move(payload));
+        auto shared_payload = texture_ram_cache().insert(cache_key, std::move(payload));
+        texture_cache_writer().enqueue(cache_key, std::move(shared_payload));
     }
     if (cache_hit && std::getenv("TTT2_TRACE_TEXTURE_LOADS")) {
         std::fprintf(stderr, "ttt2: gpu: texture cache HIT 0x%08X %ux%u levels %u (%zu bytes)\n",
