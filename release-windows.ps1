@@ -205,7 +205,7 @@ if ($Publish) {
     & $GhExe auth status
     if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated." }
     $Repo = "xruanzin/Tekken-Tag-2-Recompiled"
-    Write-Host "==> Publishing GitHub pre-release $Version"
+    Write-Host "==> Publishing GitHub release $Version"
 
     # A missing release is an expected first-publish condition, not a script
     # failure. Suppress gh's "release not found" stderr so PowerShell 5.1 with
@@ -217,11 +217,11 @@ if ($Publish) {
         Write-Host "==> Existing release found; replacing assets"
         & $GhExe release upload $Version $Zip $ReleaseLauncher $ReleaseQuickPlay $ReleaseRuntime $Checksums --repo $Repo --clobber
         if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
-        & $GhExe release edit $Version --repo $Repo --title "TTT2 Recompiled Windows $Version" --notes-file $Notes --prerelease
+        & $GhExe release edit $Version --repo $Repo --title "TTT2 Recompiled Windows $Version" --notes-file $Notes
         if ($LASTEXITCODE -ne 0) { throw "gh release edit failed" }
     } else {
-        Write-Host "==> Creating new GitHub pre-release"
-        & $GhExe release create $Version $Zip $ReleaseLauncher $ReleaseQuickPlay $ReleaseRuntime $Checksums --repo $Repo --target windows-host --title "TTT2 Recompiled Windows $Version" --notes-file $Notes --prerelease
+        Write-Host "==> Creating new GitHub release"
+        & $GhExe release create $Version $Zip $ReleaseLauncher $ReleaseQuickPlay $ReleaseRuntime $Checksums --repo $Repo --target windows-host --title "TTT2 Recompiled Windows $Version" --notes-file $Notes
         if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
     }
     Write-Host "Published: https://github.com/$Repo/releases/tag/$Version"
