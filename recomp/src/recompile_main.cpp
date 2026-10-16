@@ -66,11 +66,35 @@ bool write_if_changed(const fs::path& path, const std::string& content) {
 
 #ifdef _WIN32
     // std::filesystem::rename does not replace an existing destination on
-    // Windows. Full-AOT changes existing shard files, so use the native
-    // replace operation instead of letting a worker thread terminate here.
-    if (!MoveFileExW(temporary.c_str(), path.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        const DWORD error = GetLastError();
+    // Windows. Clear a possible read-only bit and retry transient sharing /
+    // antivirus locks before failing. Full-AOT is also generated in a
+    // dedicated directory by build-windows.ps1, so this path is mostly for
+    // incremental regeneration after the first complete build.
+    if (fs::exists(path)) {
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_READONLY)) {
+            SetFileAttributesW(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY);
+        }
+    }
+
+    DWORD error = ERROR_SUCCESS;
+    bool replaced = false;
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        if (MoveFileExW(temporary.c_str(), path.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            replaced = true;
+            break;
+        }
+        error = GetLastError();
+        if (error != ERROR_ACCESS_DENIED &&
+            error != ERROR_SHARING_VIOLATION &&
+            error != ERROR_LOCK_VIOLATION) {
+            break;
+        }
+        Sleep(50);
+    }
+    if (!replaced) {
         std::error_code ignored;
         fs::remove(temporary, ignored);
         throw std::runtime_error("cannot replace " + path.string() +
