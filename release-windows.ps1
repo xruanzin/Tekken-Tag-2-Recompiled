@@ -87,6 +87,13 @@ if (-not $SkipBuild) {
     if ($Clean) { $buildArgs += "-Clean" }
     & powershell.exe @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "build-windows.ps1 failed with exit code $LASTEXITCODE" }
+} else {
+    # Skip the expensive game-code rebuild, but always refresh the lightweight
+    # launcher binaries so UI/validation fixes cannot be hidden by stale EXEs.
+    $CMakeExe = Need-Command "cmake.exe"
+    Write-Host "==> Refreshing Windows launchers (static runtime build skipped)"
+    & $CMakeExe --build $BuildDir --target ttt2_launcher ttt2_play
+    if ($LASTEXITCODE -ne 0) { throw "Launcher refresh failed with exit code $LASTEXITCODE" }
 }
 
 foreach ($required in @($RuntimeExe, $LauncherExe, $QuickPlayExe)) {
