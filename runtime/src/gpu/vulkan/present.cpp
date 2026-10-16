@@ -1145,7 +1145,11 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[1].pImageInfo = &target;
         ctx_.cmd_push_descriptor_set(present_cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, scale_layout_, 0, 2, writes);
-        const bool use_fsr1 = fsr1_scaling() &&
+        const bool scaling = w != static_cast<int32_t>(src.width) ||
+                             h != static_cast<int32_t>(src.height);
+        // EASU is an upscaler, not a free post-process. At native 1:1
+        // resolution it only adds GPU work, especially painful on iGPUs.
+        const bool use_fsr1 = fsr1_scaling() && scaling &&
                               w >= static_cast<int32_t>(src.width) &&
                               h >= static_cast<int32_t>(src.height);
         struct PresentConstants {
@@ -1163,7 +1167,10 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         rect.size[0] = w; rect.size[1] = h;
         rect.extent[0] = static_cast<int32_t>(swapchain_extent_.width);
         rect.extent[1] = static_cast<int32_t>(swapchain_extent_.height);
-        rect.sharpness = presentation_sharpness();
+        // In FSR mode at 1:1, preserve native detail instead of paying
+        // for a redundant sharpening pass. Explicit "sharp" mode still
+        // keeps its sharpening behavior at native resolution.
+        rect.sharpness = (!scaling && fsr1_scaling()) ? 0.0f : presentation_sharpness();
         rect.flags = (presentation_fxaa() && !use_fsr1 ? 1u : 0u) | (use_fsr1 ? 2u : 0u);
 
         if (use_fsr1) {
