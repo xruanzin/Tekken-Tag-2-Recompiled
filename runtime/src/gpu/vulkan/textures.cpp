@@ -213,8 +213,7 @@ void Renderer::copy_depth_to_texture(const Target& src, Texture& t, uint32_t wid
                                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
     region.imageExtent = {width, height, 1};
@@ -282,8 +281,7 @@ bool Renderer::load_texture_from_targets(Texture& t) {
     }
     if (t.scale != scale) create_texture_image(t, scale);
     const uint32_t block = f.compressed ? 4 : 1;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     for (uint32_t level = 0; level < levels; ++level) {
         const Target* src = sources[level];
         if (src == nullptr || src->scale != scale) continue;
@@ -384,6 +382,7 @@ void Renderer::load_texture(Texture& t) {
     // prints the MD5 a replacement names).
     static const bool trace = std::getenv("TTT2_TRACE_TEXTURES") != nullptr;
     std::array<uint8_t, 16> md5{};
+    std::vector<uint8_t> prepared_level0;
     const auto& replacements = gpu::texture_replacements();
     const bool candidate = r.dim == gx2::kDim2D && r.depth == 1 &&
                            std::any_of(replacements.begin(), replacements.end(), [&](const gpu::TextureReplacement& c) {
@@ -391,10 +390,10 @@ void Renderer::load_texture(Texture& t) {
                            });
     if (candidate || (trace && hw != fmt::k8)) {
         const uint32_t ew = (r.width + block - 1) / block, eh = (r.height + block - 1) / block;
-        std::vector<uint8_t> level0(size_t{ew} * eh * f.bytes);
-        detile(tiled_level(0), ew, eh, 0, 1, level0.data());
+        prepared_level0.resize(size_t{ew} * eh * f.bytes);
+        detile(tiled_level(0), ew, eh, 0, 1, prepared_level0.data());
         unsigned int length = 0;
-        EVP_Digest(level0.data(), level0.size(), md5.data(), &length, EVP_md5(), nullptr);
+        EVP_Digest(prepared_level0.data(), prepared_level0.size(), md5.data(), &length, EVP_md5(), nullptr);
         if (trace) {
             static std::set<std::array<uint8_t, 16>> seen;
             if (seen.insert(md5).second) {
@@ -421,8 +420,7 @@ void Renderer::load_texture(Texture& t) {
         t.rgba = replaced != nullptr;
         create_texture_image(t, 1);
     }
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     if (replaced) {
         // Level 0 as given, each smaller level the average of the one above.
         std::vector<uint8_t> level(*replaced);
@@ -468,7 +466,13 @@ void Renderer::load_texture(Texture& t) {
         const VkDeviceSize bytes = VkDeviceSize{ew} * eh * slices * f.bytes;
         VkDeviceSize offset = 0;
         uint8_t* staging = upload(bytes, 16, offset);
-        if (level == 0 && hw == fmt::k8 && slices == 1 && plane_filter) {
+        if (level == 0 && !prepared_level0.empty() && prepared_level0.size() == bytes) {
+            // Replacement matching / tracing already detiled level 0.
+            if (hw == fmt::k8 && slices == 1 && plane_filter) {
+                plane_filter(uint32_t{s.image}, ew, eh, prepared_level0.data());
+            }
+            std::memcpy(staging, prepared_level0.data(), prepared_level0.size());
+        } else if (level == 0 && hw == fmt::k8 && slices == 1 && plane_filter) {
             // (Staging memory is slow to read back.)
             std::vector<uint8_t> plane(bytes);
             detile(tiled_level(level), ew, eh, 0, slices, plane.data());
