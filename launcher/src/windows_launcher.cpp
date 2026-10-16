@@ -692,7 +692,15 @@ void apply_environment() {
 bool verify_game_source(const fs::path& game, bool show_error) {
     if (!valid_game(game) || g_exe.empty()) return false;
 
-    apply_environment();
+    // Keep verification isolated from graphics/audio/performance settings.
+    // The release builder verifies successfully with only TTT2_USER_DIR set;
+    // applying the full runtime environment here can make unrelated settings
+    // affect a simple RPX hash/parse check.
+    const fs::path user = g_root / L"user";
+    std::error_code user_ec;
+    fs::create_directories(user, user_ec);
+    set_env(L"TTT2_USER_DIR", user.wstring());
+
     std::wstring command = L"\"" + g_exe.wstring() + L"\" --verify \"" + game.wstring() + L"\"";
     std::vector<wchar_t> mutable_command(command.begin(), command.end());
     mutable_command.push_back(L'\0');
@@ -743,10 +751,20 @@ bool verify_game_source(const fs::path& game, bool show_error) {
                 L"preview builds. The expected runtime is bin\\ttt2-runtime.exe.";
             break;
         default:
-            message =
-                L"Game validation failed for a reason other than the game version (runtime exit code " +
-                std::to_wstring(exit_code) +
-                L").\n\nSee user\\last_run.log for the exact cause.";
+            if (exit_code == 0xC0000409u) {
+                message =
+                    L"The game version check did not fail. The runtime itself crashed during validation "
+                    L"(Windows fast-fail 0xC0000409).\n\n"
+                    L"This is a runtime/launcher validation problem, not evidence that your game is not v16. "
+                    L"See user\\last_run.log for the last runtime message.";
+            } else {
+                wchar_t code[32]{};
+                std::swprintf(code, std::size(code), L"0x%08lX", static_cast<unsigned long>(exit_code));
+                message =
+                    L"Game validation failed for a reason other than the game version (runtime exit code " +
+                    std::wstring(code) +
+                    L").\n\nSee user\\last_run.log for the exact cause.";
+            }
             break;
         }
         MessageBoxW(g_main, message.c_str(), L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
