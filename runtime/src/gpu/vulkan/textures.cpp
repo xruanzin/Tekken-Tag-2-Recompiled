@@ -630,8 +630,12 @@ void Renderer::load_texture(Texture& t) {
         std::vector<uint8_t> data;
     };
     std::vector<PreparedLevel> linear(s.mip_levels);
+    std::vector<TiledLevel> tiled_levels(s.mip_levels);
     size_t total_linear_bytes = 0;
     for (uint32_t level = 0; level < s.mip_levels; ++level) {
+        // Address-library queries stay on the renderer thread. The workers
+        // only consume immutable TiledLevel descriptors and guest bytes.
+        tiled_levels[level] = tiled_level(level);
         PreparedLevel& p = linear[level];
         p.width = std::max(1u, r.width >> level);
         p.height = std::max(1u, r.height >> level);
@@ -660,7 +664,7 @@ void Renderer::load_texture(Texture& t) {
             if (level == 0 && !prepared_level0.empty() && prepared_level0.size() == p.bytes) {
                 std::memcpy(p.data.data(), prepared_level0.data(), p.bytes);
             } else {
-                detile(tiled_level(level), p.ew, p.eh, 0, p.slices, p.data.data());
+                detile(tiled_levels[level], p.ew, p.eh, 0, p.slices, p.data.data());
             }
             if (hw == fmt::k8_24) {
                 auto* v = reinterpret_cast<uint32_t*>(p.data.data());
