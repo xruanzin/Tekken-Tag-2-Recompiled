@@ -66,13 +66,14 @@ The build script verifies this hash before recompiling the game.
 The [GitHub Releases](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/releases) page provides a
 **ready-to-run Windows launcher** so users do not need to compile the launcher themselves.
 
-Release downloads intentionally do **not** include `ttt2.exe`, `Tekken.rpx`, generated game
-code or game assets. The game executable must be built locally from the user's own legally
-obtained European v16 copy.
+Release downloads intentionally do **not** include a game-derived `ttt2.exe`, `Tekken.rpx`,
+generated game code or game assets. Instead, the complete Windows package lets the launcher
+prepare `game/ttt2.exe` locally from the user's own legally obtained European v16 copy on the
+first run.
 
-The standalone `TTT2 Launcher.exe` release asset has its launcher artwork embedded directly in
-the executable. A ZIP package is also provided with the launcher, Windows documentation and
-license.
+The release ZIP is the recommended download for a new installation because it contains the
+launcher plus the automatic first-run preparation files. The standalone `TTT2 Launcher.exe`
+asset is mainly for updating an existing installation that already has those support files.
 
 ## First run
 
@@ -105,19 +106,17 @@ are never copied into the repository or release.
 
 ### Requirements
 
+For the release package:
+
 - Windows 11 x64
 - CPU with AVX2
 - Vulkan 1.3-capable GPU and current driver
-- Git
-- CMake
-- Ninja
-- LLVM / Clang
-- Visual Studio C++ Build Tools
-- Python 3
+- internet access during the first preparation when required tools are not already installed
 
-The Windows build script uses pinned dependencies and vcpkg packages where appropriate.
+Git, CMake, Ninja, LLVM/Clang, Python and the Visual Studio C++ Build Tools are checked by the
+automatic first-run setup and can be installed through Windows Package Manager when missing.
 
-### Build
+### Manual developer build
 
 ```powershell
 git clone https://github.com/xruanzin/Tekken-Tag-2-Recompiled.git
