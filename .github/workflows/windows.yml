@@ -146,6 +146,7 @@ jobs:
           - Windows-focused runtime configuration and AMD integrated-GPU performance presets.
           - Ready-to-run generic ttt2.exe host included with the launcher.
           - No first-run C++ compilation and no local build toolchain required.
+          - On-demand baseline x86-64 block JIT with a persistent warm block cache.
           - The user only selects their own EU v16 game folder or supported .wua and presses PLAY.
           - No terminal window is shown; runtime diagnostics are written to logs/ttt2-last-run.txt.
 
