@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstdint>
 #include <ctime>
 #include <system_error>
 
@@ -110,6 +111,34 @@ int64_t local_utc_offset_seconds(std::time_t when) {
     std::tm local{};
     if (localtime_r(&when, &local) == nullptr) return 0;
     return static_cast<int64_t>(local.tm_gmtoff);
+#endif
+}
+
+uint64_t system_memory_total_bytes() {
+#ifdef _WIN32
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) return 0;
+    return static_cast<uint64_t>(status.ullTotalPhys);
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES);
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page_size <= 0) return 0;
+    return static_cast<uint64_t>(pages) * static_cast<uint64_t>(page_size);
+#endif
+}
+
+uint64_t system_memory_available_bytes() {
+#ifdef _WIN32
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) return 0;
+    return static_cast<uint64_t>(status.ullAvailPhys);
+#else
+    const long pages = sysconf(_SC_AVPHYS_PAGES);
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page_size <= 0) return 0;
+    return static_cast<uint64_t>(pages) * static_cast<uint64_t>(page_size);
 #endif
 }
 
