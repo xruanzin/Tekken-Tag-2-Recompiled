@@ -218,8 +218,13 @@ void Renderer::load_pipeline_cache() {
 }
 
 void Renderer::save_pipeline_cache() {
-    if (new_pipelines_.exchange(0, std::memory_order_acq_rel) == 0 || cache_directory().empty()) return;
-    std::lock_guard cache_lock(pipeline_cache_mutex_);
+    if (new_pipelines_.load(std::memory_order_acquire) == 0 || cache_directory().empty()) return;
+    // Never stall the render thread behind a driver pipeline compilation.
+    // If the background worker owns the cache, the next periodic save will
+    // persist it instead.
+    std::unique_lock cache_lock(pipeline_cache_mutex_, std::try_to_lock);
+    if (!cache_lock.owns_lock()) return;
+    if (new_pipelines_.exchange(0, std::memory_order_acq_rel) == 0) return;
     size_t size = 0;
     if (vkGetPipelineCacheData(ctx_.device, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0) return;
     std::vector<char> data(size);
