@@ -57,7 +57,7 @@ uint32_t call_guest(PPCContext& ctx, uint32_t function, std::initializer_list<ui
         ctx.r[reg++] = arg;
     }
     ctx.lr = 0;
-    cafe_ppc_lookup(function)(ctx, guest_base());
+    execute_guest(ctx, function);
     const uint32_t result = ctx.r[3];
     ctx.r[1] = saved_sp;
     ctx.lr = saved_lr;
