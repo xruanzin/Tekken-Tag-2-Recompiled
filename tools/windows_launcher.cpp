@@ -538,8 +538,9 @@ int combo_sel(HWND hwnd) {
 void get_game_edit() {
     if (!g_game_edit) return;
     const int len = GetWindowTextLengthW(g_game_edit);
-    std::wstring text(static_cast<size_t>(len), L'\0');
+    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
     if (len) GetWindowTextW(g_game_edit, text.data(), len + 1);
+    text.resize(static_cast<size_t>(len));
     g_cfg.game = text;
 }
 
@@ -612,10 +613,39 @@ void show_page(Page page) {
     }
 }
 
+LRESULT CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_COMMAND:
+    case WM_HSCROLL:
+    case WM_DRAWITEM:
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+    case WM_CTLCOLORBTN:
+        return SendMessageW(g_main, msg, wparam, lparam);
+    case WM_ERASEBKGND: {
+        RECT r{};
+        GetClientRect(hwnd, &r);
+        FillRect(reinterpret_cast<HDC>(wparam), &r, g_panel_brush);
+        return 1;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT r{};
+        GetClientRect(hwnd, &r);
+        FillRect(dc, &r, g_panel_brush);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    default:
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+}
+
 HWND page_window() {
-    HWND page = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPCHILDREN,
-                                kContentX, kContentY, kContentW, kContentH, g_main, nullptr, g_instance, nullptr);
-    return page;
+    return CreateWindowExW(0, L"TTT2LauncherPage", L"", WS_CHILD | WS_CLIPCHILDREN,
+                           kContentX, kContentY, kContentW, kContentH, g_main, nullptr, g_instance, nullptr);
 }
 
 void page_heading(HWND page, const wchar_t* title, const wchar_t* desc = nullptr) {
@@ -982,6 +1012,14 @@ void create_nav() {
 bool init_window() {
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
+
+    WNDCLASSEXW page_class{sizeof(page_class)};
+    page_class.lpfnWndProc = page_proc;
+    page_class.hInstance = g_instance;
+    page_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    page_class.hbrBackground = g_panel_brush;
+    page_class.lpszClassName = L"TTT2LauncherPage";
+    if (!RegisterClassExW(&page_class)) return false;
 
     WNDCLASSEXW wc{sizeof(wc)};
     wc.style = CS_HREDRAW | CS_VREDRAW;
