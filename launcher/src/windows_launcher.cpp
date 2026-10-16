@@ -1469,7 +1469,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     const fs::path self = module_path();
     g_root = self.empty() ? fs::current_path() : self.parent_path();
-    g_ini = g_root / L"TTT2 Launcher.ini";
+    std::error_code config_ec;
+    fs::create_directories(g_root / L"user", config_ec);
+    g_ini = g_root / L"user" / L"settings.ini";
+    const fs::path legacy_ini = g_root / L"TTT2 Launcher.ini";
+    if (!fs::exists(g_ini, config_ec) && fs::is_regular_file(legacy_ini, config_ec)) {
+        config_ec.clear();
+        fs::copy_file(legacy_ini, g_ini, fs::copy_options::overwrite_existing, config_ec);
+    }
     g_exe = find_game_executable();
 
     load_config();
