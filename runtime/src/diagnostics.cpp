@@ -1,3 +1,4 @@
+#include "cafe/dynamic.h"
 #include "cafe/generated.h"
 #include "cafe/ppc_ops.h"
 #include "cafe/runtime.h"
@@ -63,6 +64,7 @@ void report_fault(uintptr_t host_address, uintptr_t pc, unsigned long code) {
     }
 #endif
     if (t_current != nullptr) print_guest_state(*t_current);
+    dynamic::print_recent_trace();
 }
 
 #ifdef _WIN32
@@ -114,6 +116,7 @@ void fatal(const char* format, ...) {
     va_end(args);
     std::fprintf(stderr, "\n");
     if (t_current != nullptr) print_guest_state(*t_current);
+    dynamic::print_recent_trace();
     std::fflush(stderr);
     std::_Exit(70);
 }
