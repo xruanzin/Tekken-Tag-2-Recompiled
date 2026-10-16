@@ -13,10 +13,15 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace cafe;
 namespace fs = std::filesystem;
@@ -55,7 +60,22 @@ bool write_if_changed(const fs::path& path, const std::string& content) {
             throw std::runtime_error("cannot write " + temporary.string());
         }
     }
+
+#ifdef _WIN32
+    // std::filesystem::rename does not replace an existing destination on
+    // Windows. Full-AOT changes existing shard files, so use the native
+    // replace operation instead of letting a worker thread terminate here.
+    if (!MoveFileExW(temporary.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const DWORD error = GetLastError();
+        std::error_code ignored;
+        fs::remove(temporary, ignored);
+        throw std::runtime_error("cannot replace " + path.string() +
+                                 " (Win32 error " + std::to_string(error) + ")");
+    }
+#else
     fs::rename(temporary, path);
+#endif
     return true;
 }
 
@@ -146,16 +166,24 @@ int run(const Options& options) {
         const unsigned workers = std::max(1u, std::thread::hardware_concurrency());
         std::vector<std::thread> threads;
         std::atomic<size_t> next{0};
+        std::mutex error_mutex;
+        std::exception_ptr worker_error;
         for (unsigned t = 0; t < workers; ++t) {
             threads.emplace_back([&] {
-                for (size_t i; (i = next.fetch_add(1)) < shards.size();) {
-                    emit_shard(i);
+                try {
+                    for (size_t i; (i = next.fetch_add(1)) < shards.size();) {
+                        emit_shard(i);
+                    }
+                } catch (...) {
+                    std::lock_guard lock(error_mutex);
+                    if (!worker_error) worker_error = std::current_exception();
                 }
             });
         }
         for (auto& thread : threads) {
             thread.join();
         }
+        if (worker_error) std::rethrow_exception(worker_error);
     }
 
     // Indirect-call table: every entry, compiled or not, so a call into
