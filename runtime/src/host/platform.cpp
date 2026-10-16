@@ -58,6 +58,7 @@ fs::path config_directory() {
 }
 
 fs::path data_directory() {
+    if (const char* value = std::getenv("TTT2_USER_DIR"); value && *value) return fs::path(value);
 #ifdef _WIN32
     return env_or("LOCALAPPDATA", home_directory() / "AppData/Local");
 #else
@@ -66,6 +67,7 @@ fs::path data_directory() {
 }
 
 fs::path cache_directory() {
+    if (const char* value = std::getenv("TTT2_USER_DIR"); value && *value) return fs::path(value);
 #ifdef _WIN32
     return env_or("LOCALAPPDATA", home_directory() / "AppData/Local");
 #else
