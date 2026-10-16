@@ -92,7 +92,19 @@ VkCommandBuffer Renderer::cmd() {
             if (vkGetQueryPoolResults(ctx_.device, busy_pool_, 2 * slot_, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) ==
                     VK_SUCCESS &&
                 ts[1] >= ts[0]) {
-                busy_seconds_ += (ts[1] - ts[0]) * ctx_.properties.limits.timestampPeriod * 1e-9;
+                const double busy = (ts[1] - ts[0]) * ctx_.properties.limits.timestampPeriod * 1e-9;
+                busy_seconds_ += busy;
+                static const double auto_profile_ms = [] {
+                    const char* value = std::getenv("TTT2_AUTO_PROFILE_MS");
+                    return value ? std::max(std::atof(value), 0.0) : 0.0;
+                }();
+                if (auto_profile_ms > 0.0 && busy * 1000.0 >= auto_profile_ms &&
+                    profile_frame_ == UINT64_MAX && !profiling_ && !auto_profile_pending_) {
+                    auto_profile_pending_ = true;
+                    std::fprintf(stderr,
+                                 "ttt2: gpu: slow submission %.2f ms; profiling the next title frame\n",
+                                 busy * 1000.0);
+                }
             }
         }
         cmd_ = slot.cmd;
@@ -468,6 +480,20 @@ void Renderer::swap() {
         submit(true);
         profile_report();
         profiling_ = false;
+    }
+    if (auto_profile_pending_) {
+        auto_profile_pending_ = false;
+        profile_frame_ = frame_number_ + 1;
+        if (profile_pool_ == VK_NULL_HANDLE) {
+            VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qci.queryCount = 8192;
+            VK_CHECK(vkCreateQueryPool(ctx_.device, &qci, nullptr, &profile_pool_));
+        }
+        vkCmdResetQueryPool(cmd(), profile_pool_, 0, 8192);
+        profile_marks_.clear();
+        profiling_ = true;
+        profile_mark("start");
     }
     static const double profile_at = [] {
         const char* v = std::getenv("TTT2_PROFILE_AT");

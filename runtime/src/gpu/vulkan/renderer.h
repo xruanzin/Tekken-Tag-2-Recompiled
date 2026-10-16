@@ -444,6 +444,7 @@ private:
     void profile_report();
     VkQueryPool profile_pool_ = VK_NULL_HANDLE;
     bool profiling_ = false;
+    bool auto_profile_pending_ = false;
     uint64_t profile_frame_ = UINT64_MAX;
     struct ProfileMark {
         const char* what;
