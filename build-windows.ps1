@@ -187,6 +187,12 @@ if ($ResourceLines.Count -gt 0) {
 
 $BuildPath = Join-Path $Root $BuildDir
 $GeneratedPath = Join-Path $Root $GeneratedDir
+if ($FullAot -and $GeneratedDir -eq "generated/ttt2") {
+    # Keep complete release code separate from the older reachable-only output.
+    # This avoids Windows locks/read-only attributes on partial shard files and
+    # prevents a stale 79k/205k tree from contaminating a 205k/205k build.
+    $GeneratedPath = Join-Path $Root "generated\ttt2-full"
+}
 
 if ($Clean -and (Test-Path -LiteralPath $BuildPath)) {
     Write-Host "==> Cleaning previous CMake build"
