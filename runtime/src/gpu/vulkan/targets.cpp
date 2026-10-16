@@ -154,8 +154,7 @@ Target* Renderer::depth_target(const gx2::DepthBuffer& buffer) {
 void Renderer::clear_color(const Registers&, const gx2::ColorBuffer& buffer, const float rgba[4]) {
     Target* t = color_target(buffer);
     if (t == nullptr) return;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkClearColorValue value{};
     const uint32_t type = (t->format >> 8) & 0xF;
     for (int i = 0; i < 4; ++i) {
@@ -184,8 +183,7 @@ void Renderer::clear_depth_stencil(const Registers&, const gx2::DepthBuffer& buf
     if (flags & 2) aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
     aspect &= t->image.aspect;
     if (aspect == 0) return;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkClearDepthStencilValue value{std::clamp(depth, 0.0f, 1.0f), stencil & 0xFF};
     VkImageSubresourceRange range{aspect, 0, 1, 0, 1};
     vkCmdClearDepthStencilImage(cmd(), t->image.image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
@@ -204,8 +202,7 @@ void Renderer::clear_depth_stencil(const Registers&, const gx2::DepthBuffer& buf
 void Renderer::copy_target_region(const Target& src, const Image& dst, uint32_t dst_scale, uint32_t dst_layer,
                                   uint32_t width, uint32_t height) {
     note_target_read(&src);
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     const VkImageAspectFlags aspect = dst.aspect & src.image.aspect;
     if (src.scale == dst_scale) {
         VkImageCopy region{};
