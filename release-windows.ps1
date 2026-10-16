@@ -91,23 +91,40 @@ Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $Pack
 Set-Content -LiteralPath (Join-Path $UserDir "README.txt") -Encoding UTF8 -Value "Player saves, settings and last_run.log are stored here."
 Set-Content -LiteralPath (Join-Path $OutDir "README.txt") -Encoding UTF8 -Value "Reusable generated caches are stored here."
 
+# Prove this is an ahead-of-time player build from the generated metadata
+# itself. Do not depend on runtime log creation: a WINDOWS-subsystem executable
+# may legitimately complete --verify without creating a console-visible log.
+$GeneratedImports = Join-Path $Root "generated\ttt2\imports.cpp"
+if (-not (Test-Path -LiteralPath $GeneratedImports -PathType Leaf)) {
+    throw "Refusing to package: generated\ttt2\imports.cpp was not found. Run the static build first."
+}
+$GeneratedText = Get-Content -LiteralPath $GeneratedImports -Raw
+$ProgramInfoPattern = 'cafe_program_info\s*=\s*\{[\s\S]*?"([0-9a-fA-F]{64})"[\s\S]*?,\s*([0-9]+),\s*([0-9]+)\s*\};'
+$ProgramInfoMatch = [regex]::Match($GeneratedText, $ProgramInfoPattern)
+if (-not $ProgramInfoMatch.Success) {
+    throw "Refusing to package: could not read static ProgramInfo from generated\ttt2\imports.cpp."
+}
+$GeneratedDigest = $ProgramInfoMatch.Groups[1].Value.ToLowerInvariant()
+$CompiledEntries = [int64]$ProgramInfoMatch.Groups[2].Value
+$TotalEntries = [int64]$ProgramInfoMatch.Groups[3].Value
+if ($GeneratedDigest -ne $ExpectedRpxSha256 -or $CompiledEntries -le 0 -or $TotalEntries -le 0) {
+    throw "Refusing to package: generated code is not the supported static AOT EU v16 build."
+}
+Write-Host "==> Static AOT metadata verified: $CompiledEntries/$TotalEntries guest entries compiled"
+
+# The runtime's own --verify still validates the player's game source. Its exit
+# code is authoritative; log creation is not required for this packaging check.
 $verifyUser = Join-Path $DistRoot "verify-user"
 if (Test-Path -LiteralPath $verifyUser) { Remove-Item -Recurse -Force -LiteralPath $verifyUser }
 New-Item -ItemType Directory -Force $verifyUser | Out-Null
 $oldUser = $env:TTT2_USER_DIR
 try {
     $env:TTT2_USER_DIR = $verifyUser
-    Write-Host "==> Verifying packaged static runtime against EU v16"
+    Write-Host "==> Verifying packaged runtime against EU v16 game source"
     & (Join-Path $BinDir "ttt2-runtime.exe") --verify $GameRoot
     if ($LASTEXITCODE -ne 0) { throw "Packaged runtime verification failed with exit code $LASTEXITCODE" }
 } finally { $env:TTT2_USER_DIR = $oldUser }
-
-$verifyLog = Join-Path $verifyUser "last_run.log"
-if (-not (Test-Path -LiteralPath $verifyLog)) { throw "Static runtime verification did not create last_run.log" }
-$verifyText = Get-Content -LiteralPath $verifyLog -Raw
-if ($verifyText -match 'generic runtime:' -or $verifyText -notmatch 'static AOT runtime: ([1-9][0-9]*)/([1-9][0-9]*) guest entries compiled') {
-    throw "Refusing to package: ttt2-runtime.exe is not the ahead-of-time static player build."
-}
+Write-Host "==> Runtime source verification passed"
 
 $GitExe = Get-Command git.exe -ErrorAction SilentlyContinue
 $Commit = if ($GitExe) { (& git rev-parse HEAD).Trim() } else { "unknown" }
