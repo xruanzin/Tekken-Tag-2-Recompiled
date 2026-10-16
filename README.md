@@ -8,9 +8,11 @@ Unofficial **Windows 11 port** of the original Linux static-recompilation projec
 **Original Linux port / recompiler architecture:** Petexy and upstream contributors.  
 **Windows port, launcher, host integration and Windows-focused performance work:** xruanzin.
 
-This fork keeps the same core idea as the original project: the Wii U PowerPC executable is
-translated ahead of time to native x86-64 C++, while the Wii U runtime and GX2 graphics path
-are reimplemented on the host with Vulkan. It is not a traditional CPU emulator.
+This fork keeps the original project's native Windows runtime and Vulkan GX2 implementation,
+while providing two execution paths. Developer builds can still use the original ahead-of-time
+PowerPC-to-C++ recompiler; public Windows releases use a generic zero-install host that reads
+the user's supported RPX at run time, predecodes guest code and dispatches it through the native
+runtime. This removes the end user's C++ build/toolchain step.
 
 > [!IMPORTANT]
 > **No game files are included.** You must provide your own legally obtained copy of
@@ -59,48 +61,41 @@ Only the European v16 executable is supported.
 | Version | 16 |
 | `code/Tekken.rpx` SHA-256 | `fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019` |
 
-The build script verifies this hash before recompiling the game.
+The generic Windows host validates this hash at run time. The developer build script verifies
+the same hash before ahead-of-time recompilation.
 
 ## Releases
 
-The [GitHub Releases](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/releases) page provides a
-**ready-to-run Windows launcher** so users do not need to compile the launcher themselves.
+The [GitHub Releases](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/releases) page provides
+the complete **ready-to-run Windows package**.
 
-Release downloads intentionally do **not** include a game-derived `ttt2.exe`, `Tekken.rpx`,
-generated game code or game assets. Instead, the complete Windows package lets the launcher
-prepare `game/ttt2.exe` locally from the user's own legally obtained European v16 copy on the
-first run.
+For a new installation, download `TTT2-Windows-<version>.zip`. It contains:
 
-The release ZIP is the recommended download for a new installation because it contains the
-launcher plus the automatic first-run preparation files. The standalone `TTT2 Launcher.exe`
-asset is mainly for updating an existing installation that already has those support files.
+- `TTT2 Launcher.exe`;
+- the generic `ttt2.exe` Windows host;
+- the project README and license.
+
+The generic `ttt2.exe` does **not** contain Tekken game files or precompiled Tekken game code.
+The user's own supported EU v16 game is selected from the launcher and validated at run time.
+
+The standalone launcher and host executables are also attached separately to releases for users
+updating an existing installation.
 
 ## First run
 
-The Windows release package is designed so a user can start with the launcher even before
-`ttt2.exe` exists.
+There is no first-run C++ compilation.
 
 1. Extract the complete Windows release ZIP.
 2. Open `TTT2 Launcher.exe`.
-3. Select the **extracted European v16** game folder containing `code/`, `content/` and
-   `meta/`.
-4. The main button shows **PREPARE GAME / PREPARAR JOGO** while no native executable exists.
-5. The launcher validates `code/Tekken.rpx`, runs the preparation invisibly and creates
-   `game/ttt2.exe` locally.
-6. When preparation finishes, the button becomes **PLAY / JOGAR**.
+3. Choose the game source: either the supported extracted game folder or a supported `.wua`.
+4. Click **PLAY / JOGAR**.
 
-No build terminal is shown. First-run diagnostics are written to
-`logs/setup-last-run.txt`; runtime diagnostics are written to the game's
-`logs/ttt2-last-run.txt`.
+No Git, CMake, Ninja, LLVM/Clang, Python or Visual Studio Build Tools are required to play the
+release build. No PowerShell or build terminal is launched.
 
-The preparation checks required Windows development tools automatically and can use Windows
-Package Manager to install missing prerequisites. The first preparation can therefore take
-several minutes and may require network access. Game files remain in the user's own folder and
-are never copied into the repository or release.
-
-> First-run preparation currently requires the extracted `code/content/meta` layout because it
-> needs direct access to `code/Tekken.rpx`. A `.wua` can still be selected after the native
-> executable has already been prepared.
+Runtime diagnostics are written to `logs/ttt2-last-run.txt` beside the selected game source
+(or inside the selected extracted game folder). Shader, pipeline and texture caches continue to
+be reused between runs.
 
 ## Quick start on Windows
 
@@ -111,10 +106,9 @@ For the release package:
 - Windows 11 x64
 - CPU with AVX2
 - Vulkan 1.3-capable GPU and current driver
-- internet access during the first preparation when required tools are not already installed
+- a legally obtained supported EU v16 game folder or supported `.wua`
 
-Git, CMake, Ninja, LLVM/Clang, Python and the Visual Studio C++ Build Tools are checked by the
-automatic first-run setup and can be installed through Windows Package Manager when missing.
+The development toolchain below is needed only when building the project from source.
 
 ### Manual developer build
 
