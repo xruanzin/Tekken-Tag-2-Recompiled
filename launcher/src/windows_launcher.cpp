@@ -10,18 +10,14 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <chrono>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -251,9 +247,6 @@ std::array<HWND, kPageCount> g_nav{};
 Page g_page = kHome;
 Config g_cfg;
 fs::path g_root, g_ini, g_exe;
-std::atomic<bool> g_setup_in_progress{false};
-constexpr UINT kSetupDoneMessage = WM_APP + 42;
-constexpr UINT_PTR kSetupStatusTimer = 42;
 
 HFONT g_font = nullptr, g_small = nullptr, g_title = nullptr, g_nav_font = nullptr;
 HBRUSH g_bg_brush = nullptr, g_panel_brush = nullptr, g_edit_brush = nullptr;
@@ -534,53 +527,25 @@ void save_config() {
     put_int(L"Graphics", L"AsyncShaders", g_cfg.async_shaders ? 1 : 0);
 }
 
-const wchar_t* prepare_game_text() {
+const wchar_t* select_game_play_text() {
     static constexpr const wchar_t* labels[] = {
-        L"PREPARAR JOGO", L"PREPARE GAME", L"PREPARAR JUEGO", L"PRÉPARER LE JEU",
-        L"SPIEL VORBEREITEN", L"PREPARA GIOCO", L"ゲームを準備"
-    };
-    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
-}
-
-const wchar_t* select_game_prepare_text() {
-    static constexpr const wchar_t* labels[] = {
-        L"Selecione a pasta do jogo e clique em PREPARAR JOGO.",
-        L"Select the game folder and click PREPARE GAME.",
-        L"Selecciona la carpeta del juego y pulsa PREPARAR JUEGO.",
-        L"Sélectionnez le dossier du jeu puis cliquez sur PRÉPARER LE JEU.",
-        L"Spielordner wählen und SPIEL VORBEREITEN anklicken.",
-        L"Seleziona la cartella del gioco e premi PREPARA GIOCO.",
-        L"ゲームフォルダーを選び、ゲームを準備を押してください。"
-    };
-    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
-}
-
-const wchar_t* preparing_game_text() {
-    static constexpr const wchar_t* labels[] = {
-        L"Preparando primeira execução...", L"Preparing first run...", L"Preparando primera ejecución...",
-        L"Préparation du premier lancement...", L"Erster Start wird vorbereitet...",
-        L"Preparazione del primo avvio...", L"初回起動を準備しています..."
+        L"Selecione a pasta do jogo ou .wua para jogar.",
+        L"Select the game folder or .wua to play.",
+        L"Selecciona la carpeta del juego o .wua para jugar.",
+        L"Sélectionnez le dossier du jeu ou le fichier .wua.",
+        L"Wähle den Spielordner oder eine .wua-Datei.",
+        L"Seleziona la cartella del gioco o il file .wua.",
+        L"ゲームフォルダーまたは .wua を選択してください。"
     };
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
 
 const wchar_t* ready_game_text() {
     static constexpr const wchar_t* labels[] = {
-        L"Pronto para jogar.", L"Ready to play.", L"Listo para jugar.", L"Prêt à jouer.",
-        L"Spielbereit.", L"Pronto per giocare.", L"プレイできます。"
-    };
-    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
-}
-
-const wchar_t* setup_failed_text() {
-    static constexpr const wchar_t* labels[] = {
-        L"A preparação falhou. Veja logs\\setup-last-run.txt.",
-        L"Preparation failed. See logs\\setup-last-run.txt.",
-        L"La preparación falló. Consulta logs\\setup-last-run.txt.",
-        L"La préparation a échoué. Consultez logs\\setup-last-run.txt.",
-        L"Vorbereitung fehlgeschlagen. Siehe logs\\setup-last-run.txt.",
-        L"Preparazione non riuscita. Vedi logs\\setup-last-run.txt.",
-        L"準備に失敗しました。logs\\setup-last-run.txt を確認してください。"
+        L"Jogo encontrado. Pronto para jogar.", L"Game found. Ready to play.",
+        L"Juego encontrado. Listo para jugar.", L"Jeu trouvé. Prêt à jouer.",
+        L"Spiel gefunden. Spielbereit.", L"Gioco trovato. Pronto per giocare.",
+        L"ゲームを確認しました。プレイできます。"
     };
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
@@ -658,95 +623,6 @@ void set_env(const wchar_t* name, const std::wstring& value) {
     SetEnvironmentVariableW(name, value.empty() ? nullptr : value.c_str());
 }
 
-std::optional<fs::path> first_run_rpx() {
-    std::error_code ec;
-    if (!fs::is_directory(g_cfg.game, ec)) return std::nullopt;
-    const fs::path rpx = g_cfg.game / L"code" / L"Tekken.rpx";
-    if (!fs::is_regular_file(rpx, ec)) return std::nullopt;
-    return rpx;
-}
-
-std::wstring read_setup_status() {
-    const fs::path path = g_root / L"logs" / L"setup-state.txt";
-    std::wifstream input(path);
-    if (!input) return {};
-    std::wstring text;
-    std::getline(input, text);
-    return text;
-}
-
-bool spawn_first_run_setup(const fs::path& rpx) {
-    const fs::path script = g_root / L"setup" / L"prepare-game.ps1";
-    std::error_code ec;
-    if (!fs::is_regular_file(script, ec)) {
-        MessageBoxW(g_main,
-                    L"The first-run setup files are missing. Extract the complete Windows release package before running the launcher.",
-                    L"TTT2 Launcher", MB_ICONERROR | MB_OK);
-        return false;
-    }
-
-    const fs::path output = g_root / L"game" / L"ttt2.exe";
-    fs::create_directories(g_root / L"logs", ec);
-    ec.clear();
-    fs::create_directories(output.parent_path(), ec);
-
-    std::wstring command =
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" +
-        script.wstring() + L"\" -Rpx \"" + rpx.wstring() + L"\" -OutputExe \"" +
-        output.wstring() + L"\"";
-    std::vector<wchar_t> mutable_command(command.begin(), command.end());
-    mutable_command.push_back(L'\0');
-
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    const std::wstring working = g_root.wstring();
-    const BOOL ok = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
-                                   CREATE_NO_WINDOW, nullptr, working.c_str(), &startup, &process);
-    if (!ok) {
-        MessageBoxW(g_main, L"Could not start first-run preparation.", L"TTT2 Launcher",
-                    MB_ICONERROR | MB_OK);
-        return false;
-    }
-
-    g_setup_in_progress = true;
-    if (g_play) {
-        EnableWindow(g_play, FALSE);
-        SetWindowTextW(g_play, preparing_game_text());
-    }
-    if (g_setup_status) SetWindowTextW(g_setup_status, preparing_game_text());
-    SetTimer(g_main, kSetupStatusTimer, 500, nullptr);
-
-    std::thread([process]() mutable {
-        WaitForSingleObject(process.hProcess, INFINITE);
-        DWORD exit_code = 1;
-        GetExitCodeProcess(process.hProcess, &exit_code);
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        if (g_main && IsWindow(g_main)) {
-            PostMessageW(g_main, kSetupDoneMessage, static_cast<WPARAM>(exit_code), 0);
-        }
-    }).detach();
-    return true;
-}
-
-void begin_first_run_setup() {
-    if (g_setup_in_progress) return;
-    if (!valid_game(g_cfg.game)) {
-        MessageBoxW(g_main, tr(T_BAD_GAME), L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
-        return;
-    }
-    const auto rpx = first_run_rpx();
-    if (!rpx) {
-        MessageBoxW(g_main,
-                    L"First-run preparation currently needs the extracted game folder containing code\\Tekken.rpx. Select the extracted EU v16 code/content/meta folder.",
-                    L"TTT2 Launcher", MB_ICONINFORMATION | MB_OK);
-        return;
-    }
-    save_config();
-    spawn_first_run_setup(*rpx);
-}
-
 void apply_environment() {
     // Internal rendering.
     if (g_cfg.render_scale == 0) set_env(L"TTT2_SCALE", L"");
@@ -803,7 +679,9 @@ bool launch_game() {
         return false;
     }
     if (g_exe.empty()) {
-        begin_first_run_setup();
+        MessageBoxW(g_main,
+                    L"ttt2.exe is missing. Extract the complete TTT2 Windows release ZIP and run the launcher from that folder.",
+                    L"TTT2 Launcher", MB_ICONERROR | MB_OK);
         return false;
     }
     save_config();
@@ -1076,10 +954,9 @@ void create_home() {
     make_static(page, L"NATIVE RECOMPILATION", 24, 333, 260, 24, g_small);
 
     g_setup_status = make_static(page,
-        g_exe.empty() ? select_game_prepare_text() : ready_game_text(),
+        valid_game(g_cfg.game) ? ready_game_text() : select_game_play_text(),
         24, 352, 319, 38, g_small);
-    g_play = make_button(page, ID_PLAY, g_exe.empty() ? prepare_game_text() : tr(T_PLAY),
-                         24, 394, 319, 54, true);
+    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 394, 319, 54, true);
     make_button(page, ID_SAVE, tr(T_SAVE), 24, 460, 150, 40, true);
     make_button(page, ID_RESET, tr(T_RESET), 185, 460, 158, 40, true);
 
@@ -1334,8 +1211,9 @@ void handle_browse() {
     if (!chosen) return;
     g_cfg.game = *chosen;
     SetWindowTextW(g_game_edit, g_cfg.game.c_str());
-    if (g_setup_status && g_exe.empty()) {
-        SetWindowTextW(g_setup_status, select_game_prepare_text());
+    if (g_setup_status) {
+        SetWindowTextW(g_setup_status,
+                       valid_game(g_cfg.game) ? ready_game_text() : select_game_play_text());
     }
 }
 
@@ -1351,39 +1229,6 @@ void handle_upscaler_change() {
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
-    case kSetupDoneMessage: {
-        KillTimer(hwnd, kSetupStatusTimer);
-        g_setup_in_progress = false;
-        const DWORD exit_code = static_cast<DWORD>(wparam);
-        g_exe = find_game_executable();
-        if (exit_code == 0 && !g_exe.empty()) {
-            if (g_setup_status) SetWindowTextW(g_setup_status, ready_game_text());
-            if (g_play) {
-                SetWindowTextW(g_play, tr(T_PLAY));
-                EnableWindow(g_play, TRUE);
-                InvalidateRect(g_play, nullptr, TRUE);
-            }
-            MessageBoxW(g_main, ready_game_text(), L"TTT2 Launcher", MB_ICONINFORMATION | MB_OK);
-        } else {
-            if (g_setup_status) SetWindowTextW(g_setup_status, setup_failed_text());
-            if (g_play) {
-                SetWindowTextW(g_play, prepare_game_text());
-                EnableWindow(g_play, TRUE);
-                InvalidateRect(g_play, nullptr, TRUE);
-            }
-            MessageBoxW(g_main, setup_failed_text(), L"TTT2 Launcher", MB_ICONERROR | MB_OK);
-        }
-        return 0;
-    }
-
-    case WM_TIMER:
-        if (wparam == kSetupStatusTimer && g_setup_in_progress && g_setup_status) {
-            const std::wstring status = read_setup_status();
-            if (!status.empty()) SetWindowTextW(g_setup_status, status.c_str());
-            return 0;
-        }
-        break;
-
     case WM_COMMAND: {
         const int id = LOWORD(wparam);
         const int code = HIWORD(wparam);
