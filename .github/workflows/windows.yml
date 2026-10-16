@@ -131,13 +131,13 @@ jobs:
           $Standalone = Join-Path $DistRoot "TTT2 Launcher.exe"
           Copy-Item "build\windows\TTT2 Launcher.exe" $Standalone -Force
 
-          $Host = Join-Path $DistRoot "ttt2.exe"
-          Copy-Item "build\windows\ttt2.exe" $Host -Force
+          $HostExe = Join-Path $DistRoot "ttt2.exe"
+          Copy-Item "build\windows\ttt2.exe" $HostExe -Force
 
           @"
           ## TTT2 Recompiled Windows $Version
 
-          Windows preview release with automatic first-run preparation for the Windows host fork.
+          Windows preview release with a ready-to-run generic host for the Windows fork.
 
           ### Included
           - Standalone native Windows launcher with the launcher artwork embedded in the executable.
@@ -163,7 +163,7 @@ jobs:
 
           "RELEASE_TAG=$Version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RELEASE_EXE=$Standalone" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "RELEASE_HOST=$Host" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_HOST=$HostExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RELEASE_ZIP=$Zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RELEASE_NOTES=$(Join-Path $DistRoot 'release-notes.md')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
