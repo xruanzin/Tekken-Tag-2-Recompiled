@@ -51,7 +51,7 @@ public:
             // the forced two-frame input delay at this exact instruction to
             // li r7,0. Keep the original generated instruction, then override
             // its result only when the native launcher option is enabled.
-            if (a == 0x02EF885Cu) {
+            if (a == 0x02EF885Cu && w == 0x38E00002u) {
                 line("if (cafe_ppc_runtime_option(1)) ctx.r[7] = 0;");
             }
         }
