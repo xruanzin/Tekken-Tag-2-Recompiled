@@ -1083,7 +1083,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         RECT top{kSidebarWidth, 0, client.right, 92};
         Gdiplus::Graphics top_graphics(dc);
         Gdiplus::SolidBrush top_veil(Gdiplus::Color(120, 6, 9, 15));
-        top_graphics.FillRectangle(&top_veil, top.left, top.top, top.right - top.left, top.bottom - top.top);
+        top_graphics.FillRectangle(
+            &top_veil,
+            Gdiplus::Rect(static_cast<INT>(top.left), static_cast<INT>(top.top),
+                          static_cast<INT>(top.right - top.left), static_cast<INT>(top.bottom - top.top)));
 
         HBRUSH red = CreateSolidBrush(kRedDark);
         HBRUSH blue = CreateSolidBrush(kBlueDark);
