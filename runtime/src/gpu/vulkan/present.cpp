@@ -359,8 +359,7 @@ uint32_t Renderer::take_present_image() {
 // timeline value at which the copy has finished.
 uint32_t Renderer::copy_scan_to_present_image(uint64_t& ready) {
     const uint32_t i = take_present_image();
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkImageCopy region{};
     region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
