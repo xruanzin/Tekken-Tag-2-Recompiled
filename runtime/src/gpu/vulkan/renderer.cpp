@@ -252,6 +252,12 @@ void Renderer::end_rendering() {
     barrier();
 }
 
+void Renderer::end_rendering_and_barrier() {
+    const bool was_rendering = rendering_;
+    end_rendering();
+    if (!was_rendering) barrier();
+}
+
 Image Renderer::create_image(VkFormat format, VkImageAspectFlags aspect, uint32_t width, uint32_t height,
                              uint32_t layers, uint32_t levels, VkImageUsageFlags usage, VkImageViewType view_type,
                              bool shared) {
@@ -340,8 +346,7 @@ void Renderer::copy_to_scan_buffer(const gx2::ColorBuffer& buffer, uint32_t scan
                                 VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_IMAGE_VIEW_TYPE_2D);
     }
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkImageCopy region{};
     region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -368,8 +373,7 @@ void Renderer::save_image(const Image& img, const std::string& path) {
     VkDeviceSize offset = 0;
     upload(bytes, 16, offset);
     const uint8_t* data = ring_.mapped() + offset;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkBufferImageCopy region{};
     region.bufferOffset = offset;
     region.imageSubresource = {static_cast<VkImageAspectFlags>(depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
