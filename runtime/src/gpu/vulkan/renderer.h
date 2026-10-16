@@ -442,7 +442,7 @@ private:
     std::mutex shader_compile_mutex_;
     std::condition_variable shader_compile_cv_;
     std::deque<ShaderCompileTask> shader_compile_queue_;
-    std::thread shader_compile_thread_;
+    std::vector<std::thread> shader_compile_threads_;
 
     std::unordered_map<uint64_t, VkPipelineLayout> layouts_;
     std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> pipelines_;
