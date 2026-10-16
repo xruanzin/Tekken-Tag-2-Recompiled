@@ -283,10 +283,18 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     const uint64_t key = fnv(keys, sizeof(keys));
     auto& entry = shaders_[key];
     if (entry) {
-        const uint8_t state = entry->state.load(std::memory_order_acquire);
+        uint8_t state = entry->state.load(std::memory_order_acquire);
         if (state == 1) {
-            shader_pending_ = true;
-            return nullptr;
+            const double wait_begin = compile_now_ms();
+            std::unique_lock lock(shader_compile_mutex_);
+            shader_compile_cv_.wait(lock, [&] {
+                return entry->state.load(std::memory_order_acquire) != 1;
+            });
+            state = entry->state.load(std::memory_order_acquire);
+            const double wait_ms = compile_now_ms() - wait_begin;
+            if (wait_ms >= 2.0 || trace_shader_cache()) {
+                std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required shader\n", wait_ms);
+            }
         }
         return entry->failed || state == 3 ? nullptr : entry.get();
     }
@@ -317,8 +325,17 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
                 {entry.get(), stage, program_hash, glsl_hash, entry->info.glsl});
         }
         shader_compile_cv_.notify_one();
-        shader_pending_ = true;
-        return nullptr;
+        const double wait_begin = compile_now_ms();
+        std::unique_lock lock(shader_compile_mutex_);
+        shader_compile_cv_.wait(lock, [&] {
+            return entry->state.load(std::memory_order_acquire) != 1;
+        });
+        const double wait_ms = compile_now_ms() - wait_begin;
+        if (wait_ms >= 2.0 || trace_shader_cache()) {
+            std::fprintf(stderr, "ttt2: gpu: required shader became ready after %.2f ms\n", wait_ms);
+        }
+        const uint8_t state = entry->state.load(std::memory_order_acquire);
+        return state == 2 && !entry->failed ? entry.get() : nullptr;
     }
     if (spirv.empty()) {
         const double compile_begin = compile_now_ms();
@@ -392,6 +409,7 @@ void Renderer::shader_worker_main() {
             shaderc_result_release(result);
             task.entry->failed = true;
             task.entry->state.store(3, std::memory_order_release);
+            shader_compile_cv_.notify_all();
             continue;
         }
 
@@ -408,6 +426,7 @@ void Renderer::shader_worker_main() {
             std::fprintf(stderr, "ttt2: gpu: async vkCreateShaderModule failed (%d)\n", static_cast<int>(vr));
             task.entry->failed = true;
             task.entry->state.store(3, std::memory_order_release);
+            shader_compile_cv_.notify_all();
             continue;
         }
         if (elapsed >= 2.0 || trace_shader_cache()) {
@@ -415,6 +434,7 @@ void Renderer::shader_worker_main() {
                          kind, static_cast<unsigned long long>(task.program_hash), elapsed);
         }
         task.entry->state.store(2, std::memory_order_release);
+        shader_compile_cv_.notify_all();
     }
     shaderc_compiler_release(compiler);
 }
@@ -536,6 +556,7 @@ void Renderer::pipeline_worker_main() {
                          static_cast<int>(result));
             entry->pipeline = VK_NULL_HANDLE;
             entry->state.store(3, std::memory_order_release);
+            pipeline_compile_cv_.notify_all();
             continue;
         }
         new_pipelines_.fetch_add(1, std::memory_order_relaxed);
@@ -545,6 +566,7 @@ void Renderer::pipeline_worker_main() {
                          elapsed, task.color_count, static_cast<int>(task.depth));
         }
         entry->state.store(2, std::memory_order_release);
+        pipeline_compile_cv_.notify_all();
     }
 }
 
@@ -614,12 +636,8 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
     auto& entry = pipelines_[key];
     if (entry) {
         const uint8_t state = entry->state.load(std::memory_order_acquire);
-        if (state == 1) {
-            pipeline_pending_ = true;
-            return nullptr;
-        }
         if (state == 3) return nullptr;
-        return entry->pipeline ? entry.get() : nullptr;
+        return (state == 1 || entry->pipeline != VK_NULL_HANDLE) ? entry.get() : nullptr;
     }
     entry = std::make_unique<Pipeline>();
     entry->vs = vs;
@@ -646,8 +664,7 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
             pipeline_compile_queue_.push_back(std::move(task));
         }
         pipeline_compile_cv_.notify_one();
-        pipeline_pending_ = true;
-        return nullptr;
+        return entry.get();
     }
 
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -881,10 +898,9 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     VkFormat formats[8]{};
     for (uint32_t i = 0; i < color_count; ++i) formats[i] = colors[i] ? colors[i]->image.format : VK_FORMAT_UNDEFINED;
     const VkFormat depth_format = depth ? depth->image.format : VK_FORMAT_UNDEFINED;
-    pipeline_pending_ = false;
     const Pipeline* pipe = pipeline(regs, vs, ps, formats, color_count, depth_format, topology_class);
     if (pipe == nullptr) {
-        if (!pipeline_pending_) report_once("draw skipped: pipeline could not be created", 0);
+        report_once("draw skipped: pipeline could not be created", 0);
         ++skipped_draws_;
         return;
     }
@@ -1063,6 +1079,25 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
             out[d.count] = index(0);
             break;
         }
+    }
+
+    // Pipeline creation overlaps the CPU-side constant/index work above.
+    // Wait only immediately before binding it; never silently lose a draw.
+    if (pipe->state.load(std::memory_order_acquire) == 1) {
+        const double wait_begin = compile_now_ms();
+        std::unique_lock lock(pipeline_compile_mutex_);
+        pipeline_compile_cv_.wait(lock, [&] {
+            return pipe->state.load(std::memory_order_acquire) != 1;
+        });
+        const double wait_ms = compile_now_ms() - wait_begin;
+        if (wait_ms >= 2.0 || trace_shader_cache()) {
+            std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required Vulkan pipeline\n", wait_ms);
+        }
+    }
+    if (pipe->state.load(std::memory_order_acquire) != 2 || pipe->pipeline == VK_NULL_HANDLE) {
+        report_once("draw skipped: Vulkan pipeline compilation failed", 0);
+        ++skipped_draws_;
+        return;
     }
 
     // The rendering pass.

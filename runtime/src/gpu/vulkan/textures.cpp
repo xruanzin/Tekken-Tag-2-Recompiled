@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <set>
@@ -61,15 +62,16 @@ uint64_t hash_bytes(const uint8_t* data, size_t size) {
 }
 
 constexpr uint32_t kTextureCacheMagic = 0x32585454u; // "TTX2"
-constexpr uint32_t kTextureCacheVersion = 1;
+constexpr uint32_t kTextureCacheVersion = 2;
 constexpr uint64_t kMaxCachedTextureBytes = 64ull << 20;
-constexpr uint64_t kMaxQueuedTextureCacheBytes = 192ull << 20;
+constexpr uint64_t kMaxQueuedTextureCacheBytes = 96ull << 20;
 
 struct TextureCacheHeader {
     uint32_t magic = kTextureCacheMagic;
     uint32_t version = kTextureCacheVersion;
     uint64_t key = 0;
     uint64_t payload_size = 0;
+    uint64_t payload_hash = 0;
 };
 
 bool texture_cache_enabled() {
@@ -112,7 +114,8 @@ bool load_texture_cache(uint64_t key, size_t expected, std::vector<uint8_t>& pay
     }
     payload.resize(expected);
     in.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(expected));
-    return static_cast<bool>(in);
+    if (!in) return false;
+    return hash_bytes(payload.data(), payload.size()) == header.payload_hash;
 }
 
 class TextureCacheWriter {
@@ -160,6 +163,7 @@ private:
             TextureCacheHeader header{};
             header.key = item.key;
             header.payload_size = item.payload.size();
+            header.payload_hash = hash_bytes(item.payload.data(), item.payload.size());
             {
                 std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
                 out.write(reinterpret_cast<const char*>(&header), sizeof(header));
@@ -192,6 +196,60 @@ TextureCacheWriter& texture_cache_writer() {
     return writer;
 }
 
+class TextureWorkerPool {
+public:
+    TextureWorkerPool() {
+        const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
+        worker_count_ = hardware >= 6 ? 2u : 1u;
+        for (uint32_t i = 0; i < worker_count_; ++i) workers_.emplace_back([this] { run(); });
+    }
+    ~TextureWorkerPool() {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        for (std::thread& worker : workers_) if (worker.joinable()) worker.join();
+    }
+    std::future<void> submit(std::function<void()> fn) {
+        std::packaged_task<void()> job(std::move(fn));
+        std::future<void> result = job.get_future();
+        {
+            std::lock_guard lock(mutex_);
+            jobs_.push_back(std::move(job));
+        }
+        cv_.notify_one();
+        return result;
+    }
+    uint32_t worker_count() const { return worker_count_; }
+private:
+    void run() {
+        host::set_thread_name("texture-detile");
+        host::set_thread_low_priority();
+        for (;;) {
+            std::packaged_task<void()> job;
+            {
+                std::unique_lock lock(mutex_);
+                cv_.wait(lock, [&] { return stop_ || !jobs_.empty(); });
+                if (stop_ && jobs_.empty()) return;
+                job = std::move(jobs_.front());
+                jobs_.pop_front();
+            }
+            job();
+        }
+    }
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<std::packaged_task<void()>> jobs_;
+    std::vector<std::thread> workers_;
+    uint32_t worker_count_ = 1;
+    bool stop_ = false;
+};
+
+TextureWorkerPool& texture_worker_pool() {
+    static TextureWorkerPool pool;
+    return pool;
+}
 
 VkImageViewType view_type_of(uint32_t dim) {
     switch (dim) {
@@ -237,8 +295,13 @@ uint64_t texture_cache_key(uint64_t contents, const Resource& r, const gx2::Surf
     uint32_t words[] = {
         static_cast<uint32_t>(contents), static_cast<uint32_t>(contents >> 32),
         r.format, r.width, r.height, r.depth, r.dim, r.tile_mode,
+        r.depth_tiles ? 1u : 0u, r.base_level, r.last_level, r.first_slice, r.last_slice,
+        r.base, r.mips,
         static_cast<uint32_t>(surface.mip_levels), static_cast<uint32_t>(surface.image),
-        filtered ? 1u : 0u,
+        static_cast<uint32_t>(surface.mipmaps), static_cast<uint32_t>(surface.swizzle),
+        static_cast<uint32_t>(surface.image_size), static_cast<uint32_t>(surface.image_size >> 32),
+        static_cast<uint32_t>(surface.mipmap_size), static_cast<uint32_t>(surface.mipmap_size >> 32),
+        static_cast<uint32_t>(surface.tile_mode), filtered ? 1u : 0u,
     };
     return hash_words(words, std::size(words));
 }
@@ -655,10 +718,10 @@ void Renderer::load_texture(Texture& t) {
     const bool cache_hit = cache_eligible && load_texture_cache(cache_key, total_linear_bytes, cached_linear);
 
     if (!cache_hit) {
-        // Large mip levels are independent CPU detile jobs. Prepare several
-        // at once, then issue Vulkan uploads in the original order.
+        // Large mip levels use a persistent low-priority pool, avoiding
+        // std::async thread creation spikes during gameplay.
         std::vector<std::future<void>> futures;
-        futures.reserve(std::min<size_t>(linear.size(), 4));
+        futures.reserve(std::min<size_t>(linear.size(), texture_worker_pool().worker_count()));
         const auto prepare = [&](uint32_t level) {
             PreparedLevel& p = linear[level];
             p.data.resize(p.bytes);
@@ -678,10 +741,10 @@ void Renderer::load_texture(Texture& t) {
 
         constexpr size_t kParallelMipThreshold = 256u << 10;
         uint32_t async_jobs = 0;
-        const uint32_t max_async_jobs = std::max(1u, std::min(4u, std::thread::hardware_concurrency()));
+        const uint32_t max_async_jobs = texture_worker_pool().worker_count();
         for (uint32_t level = 0; level < s.mip_levels; ++level) {
             if (linear[level].bytes >= kParallelMipThreshold && async_jobs < max_async_jobs) {
-                futures.push_back(std::async(std::launch::async, [&, level] { prepare(level); }));
+                futures.push_back(texture_worker_pool().submit([&, level] { prepare(level); }));
                 ++async_jobs;
             } else {
                 prepare(level);

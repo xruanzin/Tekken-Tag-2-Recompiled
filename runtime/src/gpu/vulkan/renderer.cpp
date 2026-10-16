@@ -87,7 +87,10 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
         async_pipelines_ = *value != '\0' && *value != '0';
     }
-    fast_pipelines_ = true;
+    // Fast-create disables driver optimization and can reduce steady-state
+    // game performance. Prefer optimized pipelines and let the disk cache
+    // pay their creation cost only once.
+    fast_pipelines_ = false;
     if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
         fast_pipelines_ = *value != '\0' && *value != '0';
     }

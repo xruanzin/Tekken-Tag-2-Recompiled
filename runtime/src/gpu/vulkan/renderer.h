@@ -460,7 +460,7 @@ private:
     };
     void pipeline_worker_main();
     bool async_pipelines_ = true;
-    bool fast_pipelines_ = true;
+    bool fast_pipelines_ = false;
     bool pipeline_pending_ = false;
     bool pipeline_compile_stop_ = false;
     std::mutex pipeline_compile_mutex_;
