@@ -462,7 +462,7 @@ private:
     uint64_t trace_frame_ = UINT64_MAX;
 
     // TTT2_PROFILE_AT=seconds: GPU time of every operation of one frame.
-    void profile_mark(const char* what, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0);
+    void profile_mark(const char* what, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0, uint32_t d = 0);
     void profile_report();
     VkQueryPool profile_pool_ = VK_NULL_HANDLE;
     bool profiling_ = false;
@@ -470,7 +470,7 @@ private:
     uint64_t profile_frame_ = UINT64_MAX;
     struct ProfileMark {
         const char* what;
-        uint32_t a, b, c;
+        uint32_t a, b, c, d;
     };
     std::vector<ProfileMark> profile_marks_;
 

@@ -1117,8 +1117,10 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     }
     if (profiling_) {
         profile_mark("draw", colors[0] ? colors[0]->address : depth ? depth->address : 0,
-                     (colors[0] ? colors[0]->pitch * colors[0]->scale : 0) << 16 | (colors[0] ? colors[0]->height * colors[0]->scale : 0),
-                     d.count * std::max(instances, 1u));
+                     (colors[0] ? colors[0]->pitch * colors[0]->scale : 0) << 16 |
+                         (colors[0] ? colors[0]->height * colors[0]->scale : 0),
+                     d.count * std::max(instances, 1u),
+                     r(reg::SQ_PGM_START_PS) << 8);
     }
 
     const uint64_t now = stamp();

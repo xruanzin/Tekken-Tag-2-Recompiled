@@ -447,11 +447,11 @@ void Renderer::save_sequence_image(uint32_t n) {
 
 // ------------------------------------------------------------ profiling
 
-void Renderer::profile_mark(const char* what, uint32_t a, uint32_t b, uint32_t c) {
+void Renderer::profile_mark(const char* what, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
     if (!profiling_ || profile_marks_.size() >= 8191) return;
     vkCmdWriteTimestamp2(cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, profile_pool_,
                          static_cast<uint32_t>(profile_marks_.size()));
-    profile_marks_.push_back({what, a, b, c});
+    profile_marks_.push_back({what, a, b, c, d});
 }
 
 void Renderer::profile_report() {
@@ -486,8 +486,8 @@ void Renderer::profile_report() {
     std::sort(items.begin(), items.end(), [](const Item& x, const Item& y) { return x.ms > y.ms; });
     for (size_t i = 0; i < std::min<size_t>(items.size(), 40); ++i) {
         const ProfileMark& m = profile_marks_[items[i].index];
-        std::fprintf(stderr, "profile:   #%-4u %7.3f ms  %s 0x%08X 0x%08X 0x%08X\n", items[i].index, items[i].ms, m.what,
-                     m.a, m.b, m.c);
+        std::fprintf(stderr, "profile:   #%-4u %7.3f ms  %s 0x%08X 0x%08X 0x%08X 0x%08X\n",
+                     items[i].index, items[i].ms, m.what, m.a, m.b, m.c, m.d);
     }
 }
 
