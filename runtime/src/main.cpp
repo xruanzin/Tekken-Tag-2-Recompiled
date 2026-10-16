@@ -166,7 +166,9 @@ int main(int argc, char** argv) {
                              cafe_program_info.total_entries);
             } else {
                 std::fprintf(stderr,
-                             "ttt2: generic runtime: PowerPC code will be translated at run time\n");
+                             "ttt2: experimental generic runtime detected; player releases require "
+                             "the static AOT runtime\n");
+                return 5;
             }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "ttt2: invalid Tekken.rpx: %s\n", error.what());
