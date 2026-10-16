@@ -141,7 +141,7 @@ The release owner can build and publish the complete player package with one com
 checking out `windows-host`:
 
 ```powershell
-.\release-windows.ps1 -Game "D:\Path\To\TTT2-EU-v16" -Version v0.4.0-static-preview -Publish
+.\release-windows.ps1 -Game "D:\Path\To\TTT2-EU-v16" -Version v1.0.0 -Publish
 ```
 
 The script verifies the EU v16 `Tekken.rpx`, builds the static AOT runtime, rejects the
