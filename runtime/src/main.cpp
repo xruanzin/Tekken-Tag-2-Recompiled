@@ -1,3 +1,4 @@
+#include "cafe/dynamic.h"
 #include "cafe/export.h"
 #include "cafe/generated.h"
 #include "cafe/layout.h"
@@ -135,13 +136,25 @@ int main(int argc, char** argv) {
     reserve_guest_memory();
     init_system_heap();
     const LoadedImage image = load_image(*rpx);
+    if (cafe_program_info.compiled_entries == 0) {
+        dynamic::initialize(*rpx);
+    }
     build_dispatch_table();
     os::init_heaps(image.data_end);
-    init_data_imports();
+    if (dynamic::enabled()) {
+        dynamic::initialize_data_imports();
+    } else {
+        init_data_imports();
+    }
     title::prepare_presentation();
-    std::fprintf(stderr, "ttt2: loaded image, entry 0x%08X, %zu/%zu guest entries compiled\n",
-                 image.entry_point, cafe_program_info.compiled_entries,
-                 cafe_program_info.total_entries);
+    if (dynamic::enabled()) {
+        std::fprintf(stderr, "ttt2: loaded image, entry 0x%08X, dynamic zero-install execution enabled\n",
+                     image.entry_point);
+    } else {
+        std::fprintf(stderr, "ttt2: loaded image, entry 0x%08X, %zu/%zu guest entries compiled\n",
+                     image.entry_point, cafe_program_info.compiled_entries,
+                     cafe_program_info.total_entries);
+    }
 
     // argv[0] is the executable name, as the Cafe loader passes it.
     const uint32_t guest_argv = system_alloc(8);
