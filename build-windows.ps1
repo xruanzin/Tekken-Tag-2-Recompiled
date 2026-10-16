@@ -240,8 +240,8 @@ if ($WindowsResource) {
     # CMake writes CMAKE_RC_COMPILER into a generated .cmake file. Native
     # Windows backslashes there are parsed as CMake escapes (e.g. "\P"),
     # so always give CMake a forward-slash path.
-    $LlvmRcForCMake = $LlvmRcExe.Replace("\\", "/")
-    $WindowsResourceForCMake = $WindowsResource.Replace("\\", "/")
+    $LlvmRcForCMake = $LlvmRcExe.Replace([char]92, [char]47)
+    $WindowsResourceForCMake = $WindowsResource.Replace([char]92, [char]47)
     $CommonArgs += "-DTTT2_WINDOWS_RESOURCE=$WindowsResourceForCMake"
     $CommonArgs += "-DCMAKE_RC_COMPILER=$LlvmRcForCMake"
 
@@ -253,10 +253,7 @@ if ($WindowsResource) {
             ForEach-Object {
                 $BadRcCache = Join-Path $_.FullName "CMakeRCCompiler.cmake"
                 if (Test-Path -LiteralPath $BadRcCache) {
-                    $RcText = Get-Content -LiteralPath $BadRcCache -Raw -ErrorAction SilentlyContinue
-                    if ($RcText -match 'C:\\\\Program Files\\\\LLVM') {
-                        Remove-Item -LiteralPath $BadRcCache -Force
-                    }
+                    Remove-Item -LiteralPath $BadRcCache -Force
                 }
             }
     }
