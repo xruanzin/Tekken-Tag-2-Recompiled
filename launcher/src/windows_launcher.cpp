@@ -551,9 +551,11 @@ const wchar_t* ready_game_text() {
 }
 
 fs::path find_game_executable() {
-    const std::array<fs::path, 3> candidates = {
-        // Public releases ship the generic host beside the launcher. Prefer
-        // it over legacy locally generated executables from older previews.
+    const std::array<fs::path, 4> candidates = {
+        // Packaged releases follow the same layout as the GOW3 Windows port:
+        // launcher in the root, generic runtime in bin/.
+        g_root / L"bin" / L"ttt2-runtime.exe",
+        // Development/legacy fallbacks.
         g_root / L"ttt2.exe",
         g_root / L"game" / L"ttt2.exe",
         g_root / L"build" / L"windows" / L"ttt2.exe"
@@ -675,14 +677,14 @@ void apply_environment() {
     set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
 }
 
-bool launch_game() {
+bool launch_game(bool wait_for_exit = false) {
     if (!valid_game(g_cfg.game)) {
         MessageBoxW(g_main, tr(T_BAD_GAME), L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
         return false;
     }
     if (g_exe.empty()) {
         MessageBoxW(g_main,
-                    L"ttt2.exe is missing. Extract the complete TTT2 Windows release ZIP and run the launcher from that folder.",
+                    L"The TTT2 runtime is missing. Extract the complete Windows release ZIP before running the launcher.",
                     L"TTT2 Launcher", MB_ICONERROR | MB_OK);
         return false;
     }
@@ -704,6 +706,13 @@ bool launch_game() {
         return false;
     }
     CloseHandle(process.hThread);
+    if (wait_for_exit) {
+        WaitForSingleObject(process.hProcess, INFINITE);
+        DWORD exit_code = 1;
+        GetExitCodeProcess(process.hProcess, &exit_code);
+        CloseHandle(process.hProcess);
+        return exit_code == 0;
+    }
     CloseHandle(process.hProcess);
     return true;
 }
@@ -953,7 +962,7 @@ void create_home() {
                           {L"Custom", L"Performance", L"Balanced", L"Quality", L"Ultra"}, g_cfg.preset);
 
     make_static(page, L"VULKAN 1.3", 24, 304, 180, 26, g_nav_font);
-    make_static(page, L"NATIVE RECOMPILATION", 24, 333, 260, 24, g_small);
+    make_static(page, L"NATIVE WINDOWS RUNTIME", 24, 333, 260, 24, g_small);
 
     g_setup_status = make_static(page,
         valid_game(g_cfg.game) ? ready_game_text() : select_game_play_text(),
@@ -1455,8 +1464,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     g_ini = g_root / L"TTT2 Launcher.ini";
     g_exe = find_game_executable();
 
-    load_theme_image();
     load_config();
+
+    int command_argc = 0;
+    LPWSTR* command_argv = CommandLineToArgvW(GetCommandLineW(), &command_argc);
+    const bool quick_play = command_argv && command_argc >= 2 &&
+                            _wcsicmp(command_argv[1], L"--play") == 0;
+    if (command_argv) LocalFree(command_argv);
+    if (quick_play) {
+        const bool ok = launch_game(true);
+        if (g_gdiplus_token) Gdiplus::GdiplusShutdown(g_gdiplus_token);
+        CoUninitialize();
+        return ok ? 0 : 1;
+    }
+
+    load_theme_image();
 
     g_bg_brush = CreateSolidBrush(kBg);
     g_panel_brush = CreateSolidBrush(kPanel);
