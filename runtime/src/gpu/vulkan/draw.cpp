@@ -212,7 +212,9 @@ const char* dump_directory() {
 void Renderer::load_pipeline_cache() {
     std::vector<char> data;
     if (!cache_directory().empty()) {
-        std::ifstream in(cache_directory() / "pipelines.bin", std::ios::binary | std::ios::ate);
+        const char* pipeline_cache_name =
+            performance_spirv(ctx_) ? "pipelines-amd-optimized-v2.bin" : "pipelines.bin";
+        std::ifstream in(cache_directory() / pipeline_cache_name, std::ios::binary | std::ios::ate);
         if (in && in.tellg() > 0) {
             data.resize(static_cast<size_t>(in.tellg()));
             in.seekg(0);
@@ -247,7 +249,9 @@ void Renderer::save_pipeline_cache() {
     if (vkGetPipelineCacheData(ctx_.device, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0) return;
     std::vector<char> data(size);
     if (vkGetPipelineCacheData(ctx_.device, pipeline_cache_, &size, data.data()) != VK_SUCCESS) return;
-    const std::filesystem::path path = cache_directory() / "pipelines.bin";
+    const char* pipeline_cache_name =
+        performance_spirv(ctx_) ? "pipelines-amd-optimized-v2.bin" : "pipelines.bin";
+    const std::filesystem::path path = cache_directory() / pipeline_cache_name;
     const std::filesystem::path temporary = path.string() + ".tmp";
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
