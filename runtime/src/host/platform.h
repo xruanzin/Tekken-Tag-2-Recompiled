@@ -16,7 +16,9 @@ std::filesystem::path cache_directory();
 std::string path_string(const std::filesystem::path& path);
 bool is_terminal(FILE* stream);
 void set_thread_name(std::string_view name);
+void set_thread_high_priority();
 void set_thread_low_priority();
+void set_guest_core_hint(int core);
 int64_t local_utc_offset_seconds(std::time_t when);
 
 } // namespace cafe::host
