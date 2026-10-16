@@ -1,3 +1,4 @@
+#include "cafe/dynamic.h"
 #include "cafe/generated.h"
 #include "cafe/layout.h"
 #include "cafe/runtime.h"
@@ -8,6 +9,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+extern "C" cafe::PPCFunc* cafe_ppc_lookup(uint32_t address);
 
 namespace cafe {
 namespace {
@@ -62,6 +65,26 @@ void build_dispatch_table() {
             insert(import.stub_address, import.function, true);
         }
     }
+}
+
+PPCFunc* find_registered_host_function(uint32_t address) {
+    if (address < layout::kHostThunkBase || address >= layout::kHostThunkLimit ||
+        g_slots.empty()) {
+        return nullptr;
+    }
+    for (size_t i = home(address);; i = (i + 1) & g_mask) {
+        const Slot& slot = g_slots[i];
+        if (slot.address == address) return slot.function;
+        if (slot.address == 0) return nullptr;
+    }
+}
+
+void execute_guest(PPCContext& ctx, uint32_t address) {
+    if (dynamic::enabled()) {
+        dynamic::execute(ctx, guest_base(), address);
+        return;
+    }
+    cafe_ppc_lookup(address)(ctx, guest_base());
 }
 
 uint32_t register_host_function(PPCFunc* function, const char* name) {
