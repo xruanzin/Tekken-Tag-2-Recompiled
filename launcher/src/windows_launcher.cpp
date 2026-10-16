@@ -739,6 +739,10 @@ bool launch_game(bool wait_for_exit = false) {
                     L"TTT2 Launcher", MB_ICONERROR | MB_OK);
         return false;
     }
+    if (g_main != nullptr && g_verified_game != g_cfg.game.wstring() &&
+        !verify_game_source(g_cfg.game, true)) {
+        return false;
+    }
     save_config();
     apply_environment();
 
