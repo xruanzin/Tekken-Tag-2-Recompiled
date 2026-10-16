@@ -138,14 +138,21 @@ if (Test-Path -LiteralPath $IconTga) {
     $WindowsAssets = Join-Path $Root "generated\windows"
     New-Item -ItemType Directory -Force $WindowsAssets | Out-Null
     $WindowsIcon = Join-Path $WindowsAssets "ttt2.ico"
-    $WindowsResource = Join-Path $WindowsAssets "ttt2.rc"
+    $WindowsRc = Join-Path $WindowsAssets "ttt2.rc"
+    $WindowsResource = Join-Path $WindowsAssets "ttt2.res"
     Write-Host "==> Generating Windows executable icon from meta\iconTex.tga"
     & $PythonExe (Join-Path $Root "tools\make_windows_icon.py") $IconTga $WindowsIcon
     if ($LASTEXITCODE -ne 0) {
         throw "Windows icon generation failed"
     }
     $IconForRc = $WindowsIcon.Replace("\", "/")
-    Set-Content -LiteralPath $WindowsResource -Encoding ASCII -Value "1 ICON `"$IconForRc`""
+    Set-Content -LiteralPath $WindowsRc -Encoding ASCII -Value "1 ICON `"$IconForRc`""
+
+    Write-Host "==> Compiling Windows icon resource"
+    & $LlvmRcExe "/fo" $WindowsResource $WindowsRc
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $WindowsResource)) {
+        throw "Windows resource compilation failed"
+    }
 } else {
     Write-Warning "meta\iconTex.tga was not found next to the selected RPX; executables will use the default Windows icon."
 }
@@ -237,25 +244,23 @@ $CommonArgs = @(
     "-DVCPKG_TARGET_TRIPLET=x64-windows-static"
 )
 if ($WindowsResource) {
-    # CMake writes CMAKE_RC_COMPILER into a generated .cmake file. Native
-    # Windows backslashes there are parsed as CMake escapes (e.g. "\P"),
-    # so always give CMake a forward-slash path.
-    $LlvmRcForCMake = $LlvmRcExe.Replace([char]92, [char]47)
     $WindowsResourceForCMake = $WindowsResource.Replace([char]92, [char]47)
     $CommonArgs += "-DTTT2_WINDOWS_RESOURCE=$WindowsResourceForCMake"
-    $CommonArgs += "-DCMAKE_RC_COMPILER=$LlvmRcForCMake"
+}
 
-    # Recover automatically from an older configure that cached an unescaped
-    # llvm-rc path. Remove only the RC compiler metadata, never the compiled
-    # game objects.
-    if (Test-Path -LiteralPath $BuildPath) {
-        Get-ChildItem -LiteralPath (Join-Path $BuildPath "CMakeFiles") -Directory -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                $BadRcCache = Join-Path $_.FullName "CMakeRCCompiler.cmake"
-                if (Test-Path -LiteralPath $BadRcCache) {
-                    Remove-Item -LiteralPath $BadRcCache -Force
-                }
-            }
+# A previous launcher revision set CMAKE_RC_COMPILER and CMake may have
+# invalidated the configure cache. Remove only the cache/Ninja metadata; keep
+# CMakeFiles/*/*.obj and all generated game code intact.
+$CacheFile = Join-Path $BuildPath "CMakeCache.txt"
+if (Test-Path -LiteralPath $CacheFile) {
+    $CacheText = Get-Content -LiteralPath $CacheFile -Raw -ErrorAction SilentlyContinue
+    if ($CacheText -match 'CMAKE_RC_COMPILER') {
+        Write-Host "==> Repairing CMake cache from the old RC compiler configuration"
+        Remove-Item -LiteralPath $CacheFile -Force
+        foreach ($Name in @("build.ninja", "rules.ninja", "cmake_install.cmake")) {
+            $Metadata = Join-Path $BuildPath $Name
+            if (Test-Path -LiteralPath $Metadata) { Remove-Item -LiteralPath $Metadata -Force }
+        }
     }
 }
 
