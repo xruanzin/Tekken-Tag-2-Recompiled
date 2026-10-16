@@ -6,6 +6,7 @@ param(
     [string]$GeneratedDir = "generated/ttt2",
     [switch]$Clean,
     [switch]$GameOnly,
+    [switch]$FullAot,
     [string]$OutputExe = ""
 )
 
@@ -311,7 +312,12 @@ if (-not (Test-Path -LiteralPath $Recompiler)) {
 New-Item -ItemType Directory -Force $GeneratedPath | Out-Null
 
 Write-Host "==> Generating local C++ from your RPX"
-& $Recompiler $RpxPath $GeneratedPath
+$recompArgs = @($RpxPath, $GeneratedPath)
+if ($FullAot) {
+    Write-Host "==> Full AOT enabled: compiling all guest function entries"
+    $recompArgs += "--all"
+}
+& $Recompiler @recompArgs
 if ($LASTEXITCODE -ne 0) {
     throw "cafe-recomp failed"
 }
