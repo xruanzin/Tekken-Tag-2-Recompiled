@@ -182,6 +182,8 @@ std::vector<uint32_t> load_cached_spirv(uint64_t key) {
 
 void store_cached_spirv(uint64_t key, const std::vector<uint32_t>& code) {
     if (cache_directory().empty()) return;
+    static std::mutex write_mutex;
+    std::lock_guard write_lock(write_mutex);
     char name[32];
     std::snprintf(name, sizeof(name), "%016llx.spv", static_cast<unsigned long long>(key));
     const std::filesystem::path path = cache_directory() / "spirv" / name;
@@ -920,6 +922,8 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
                 return shader->state.load(std::memory_order_acquire) != 1;
             });
             const double wait_ms = compile_now_ms() - wait_begin;
+            shader_wait_seconds_ += wait_ms / 1000.0;
+            ++shader_waits_;
             if (wait_ms >= 2.0 || trace_shader_cache()) {
                 std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required %s shader\n", wait_ms, kind);
             }
@@ -1127,6 +1131,8 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
             return pipe->state.load(std::memory_order_acquire) != 1;
         });
         const double wait_ms = compile_now_ms() - wait_begin;
+        pipeline_wait_seconds_ += wait_ms / 1000.0;
+        ++pipeline_waits_;
         if (wait_ms >= 2.0 || trace_shader_cache()) {
             std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required Vulkan pipeline\n", wait_ms);
         }
