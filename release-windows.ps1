@@ -38,8 +38,27 @@ function Resolve-GameRoot {
 function Need-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-    if (-not $cmd) { throw "Missing required command: $Name" }
-    return $cmd.Source
+    if ($cmd -and $cmd.Source) { return $cmd.Source }
+
+    # GitHub CLI may already be installed by winget/MSI even when this
+    # PowerShell session has not refreshed PATH yet.
+    if ($Name -ieq "gh.exe") {
+        $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+        $candidates = @(
+            (Join-Path $env:ProgramFiles "GitHub CLI\gh.exe"),
+            (if ($programFilesX86) { Join-Path $programFilesX86 "GitHub CLI\gh.exe" }),
+            (Join-Path $env:LOCALAPPDATA "Programs\GitHub CLI\gh.exe")
+        )
+        foreach ($candidate in $candidates) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                return (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+
+        throw "GitHub CLI was not found. Install it once with: winget install --id GitHub.cli -e --source winget"
+    }
+
+    throw "Missing required command: $Name"
 }
 
 $RpxPath = Resolve-RpxPath $Game
