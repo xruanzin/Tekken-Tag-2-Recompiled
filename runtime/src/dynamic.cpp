@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <memory>
