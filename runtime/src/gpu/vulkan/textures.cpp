@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -360,6 +361,18 @@ void Renderer::load_texture(Texture& t) {
     t.source = nullptr;
     t.loaded = stamp();
 
+    const auto texture_prepare_started = std::chrono::steady_clock::now();
+    const auto report_texture_prepare = [&](const char* kind) {
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - texture_prepare_started).count();
+        static const bool trace_loads = std::getenv("TTT2_TRACE_TEXTURE_LOADS") != nullptr;
+        if (trace_loads || ms >= 25.0) {
+            std::fprintf(stderr,
+                         "ttt2: gpu: texture %s 0x%08X fmt 0x%03X %ux%u levels %u prepared in %.2f ms\n",
+                         kind, uint32_t{s.image}, r.format, r.width, r.height, uint32_t{s.mip_levels}, ms);
+        }
+    };
+
     const uint32_t first_non_macro = (s.swizzle >> 16) & 0xFF;
     const uint32_t block = f.compressed ? 4 : 1;
     const auto tiled_level = [&](uint32_t level) {
@@ -456,6 +469,7 @@ void Renderer::load_texture(Texture& t) {
         }
         barrier();
         profile_mark("texture replaced", uint32_t{s.image}, r.width, r.height);
+        report_texture_prepare("replacement");
         return;
     }
     const gpu::PlaneFilter& plane_filter = gpu::plane_filter();
@@ -498,6 +512,7 @@ void Renderer::load_texture(Texture& t) {
     }
     barrier();
     profile_mark("texture upload", uint32_t{s.image}, r.width, r.height);
+    report_texture_prepare("upload");
     // TTT2_DUMP_TEXTURES=<directory>: every texture loaded from memory, as PNG.
     static const char* dump = std::getenv("TTT2_DUMP_TEXTURES");
     if (dump && r.dim == gx2::kDim2D) {
