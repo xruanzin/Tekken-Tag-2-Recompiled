@@ -117,7 +117,7 @@ jobs:
           }
 
           @"
-          TTT2 Recompiled - Windows Launcher $Version
+          TTT2 Recompiled - Windows $Version
 
           This package contains the Windows launcher and the automatic first-run preparation files.
 
@@ -158,9 +158,9 @@ jobs:
           - No PowerShell/build terminal is shown; setup and runtime diagnostics are written under logs/.
 
           ### Important
-          This release does **not** distribute `ttt2.exe`, `Tekken.rpx`, generated game code,
-          or any Tekken game data. Build `ttt2.exe` locally from your own legally obtained
-          European v16 copy by following the repository instructions.
+          This release does **not** distribute a prebuilt game-derived `ttt2.exe`, `Tekken.rpx`,
+          generated game code, or any Tekken game data. On first use, the launcher prepares
+          `game/ttt2.exe` locally from the user's own legally obtained European v16 game folder.
 
           ### Credits
           Original Linux port and core static-recompilation work: **Petexy and upstream contributors**.
