@@ -128,10 +128,10 @@ jobs:
           $Zip = Join-Path $DistRoot "TTT2-Windows-$Version.zip"
           Compress-Archive -Path (Join-Path $Package "*") -DestinationPath $Zip -CompressionLevel Optimal -Force
 
-          $Standalone = Join-Path $DistRoot "TTT2-Launcher-$Version.exe"
+          $Standalone = Join-Path $DistRoot "TTT2 Launcher.exe"
           Copy-Item "build\windows\TTT2 Launcher.exe" $Standalone -Force
 
-          $Host = Join-Path $DistRoot "ttt2-$Version.exe"
+          $Host = Join-Path $DistRoot "ttt2.exe"
           Copy-Item "build\windows\ttt2.exe" $Host -Force
 
           @"
