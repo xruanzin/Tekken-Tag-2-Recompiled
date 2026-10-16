@@ -10,6 +10,7 @@
 #include "host/window.h"
 #include "host/platform.h"
 #include "install.h"
+#include "rpx.h"
 #include "title/presentation.h"
 
 #include <atomic>
@@ -37,6 +38,7 @@ namespace {
 void usage(const char* argv0) {
     std::fprintf(stderr,
                  "usage: %s [GAME]\n"
+                 "       %s --verify GAME\n"
                  "       %s --install [GAME [FOLDER]] [--no-launcher]\n"
                  "       %s --update [FOLDER]\n"
                  "  GAME is the title's .wua archive, or a folder with code/,\n"
@@ -45,7 +47,7 @@ void usage(const char* argv0) {
                  "  FOLDER (chosen in a dialog when not given); --update copies\n"
                  "  this executable into the install after a rebuild. Saves go\n"
                  "  to $TTT2_SAVE_DIR (or %%TTT2_SAVE_DIR%% on Windows).\n",
-                 argv0, argv0, argv0);
+                 argv0, argv0, argv0, argv0);
 }
 
 // Objects the game imports as data are created by the library that owns
@@ -118,8 +120,13 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 0;
     }
+
+    const bool verify_only = argc == 3 && std::strcmp(argv[1], "--verify") == 0;
     std::filesystem::path game;
-    if (argc == 2) {
+    if (verify_only) {
+        game = argv[2];
+    } else
+ if (argc == 2) {
         game = argv[1];
     } else if (const auto installed = install::installed_game(); argc == 1 && installed) {
         game = *installed;
@@ -137,6 +144,29 @@ int main(int argc, char** argv) {
     }
     const auto rpx = vfs::read_whole("/vol/code/Tekken.rpx");
     if (!rpx) fatal("the game source has no code/Tekken.rpx");
+
+    if (verify_only) {
+        const std::string digest = sha256_hex(*rpx);
+        if (digest != cafe_program_info.rpx_sha256) {
+            std::fprintf(stderr,
+                         "ttt2: unsupported game executable\n"
+                         "ttt2: expected EU v16 Tekken.rpx SHA-256 %s\n"
+                         "ttt2: found                            %s\n",
+                         cafe_program_info.rpx_sha256, digest.c_str());
+            return 3;
+        }
+        try {
+            const rpx::Image parsed = rpx::load(*rpx);
+            std::fprintf(stderr,
+                         "ttt2: recognized supported EU v16 game: entry 0x%08X, %zu imports\n",
+                         parsed.entry_point, parsed.imports.size());
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "ttt2: invalid Tekken.rpx: %s\n", error.what());
+            return 4;
+        }
+        return 0;
+    }
+
     reserve_guest_memory();
     init_system_heap();
     const LoadedImage image = load_image(*rpx);
