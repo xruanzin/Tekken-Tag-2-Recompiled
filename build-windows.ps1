@@ -326,8 +326,8 @@ if ($GameOnly) {
     Write-Host "==> Building ttt2.exe"
     & $CMakeExe --build $BuildPath --target ttt2
 } else {
-    Write-Host "==> Building ttt2.exe and Windows launcher"
-    & $CMakeExe --build $BuildPath --target ttt2 ttt2_launcher
+    Write-Host "==> Building static ttt2.exe and Windows launchers"
+    & $CMakeExe --build $BuildPath --target ttt2 ttt2_launcher ttt2_play
 }
 if ($LASTEXITCODE -ne 0) {
     throw "Final game build failed"
@@ -348,17 +348,25 @@ if ($OutputExe) {
 }
 
 $LauncherRoot = $null
+$QuickPlayRoot = $null
 if (-not $GameOnly) {
-    $LauncherBuilt = Join-Path $BuildPath "TTT2 Launcher.exe"
+    $LauncherBuilt = Join-Path $BuildPath "Tekken Tag Tournament 2.exe"
+    $QuickPlayBuilt = Join-Path $BuildPath "Play Tekken Tag Tournament 2.exe"
     if (-not (Test-Path -LiteralPath $LauncherBuilt)) {
-        throw "Build completed but TTT2 Launcher.exe was not found at $LauncherBuilt"
+        throw "Build completed but Tekken Tag Tournament 2.exe was not found at $LauncherBuilt"
     }
-    $LauncherRoot = Join-Path $Root "TTT2 Launcher.exe"
+    if (-not (Test-Path -LiteralPath $QuickPlayBuilt)) {
+        throw "Build completed but Play Tekken Tag Tournament 2.exe was not found at $QuickPlayBuilt"
+    }
+    $LauncherRoot = Join-Path $Root "Tekken Tag Tournament 2.exe"
+    $QuickPlayRoot = Join-Path $Root "Play Tekken Tag Tournament 2.exe"
     Copy-Item -LiteralPath $LauncherBuilt -Destination $LauncherRoot -Force
+    Copy-Item -LiteralPath $QuickPlayBuilt -Destination $QuickPlayRoot -Force
 }
 
 Write-Host ""
 Write-Host "SUCCESS"
-Write-Host "Executable: $FinalExe"
-if ($LauncherRoot) { Write-Host "Launcher:   $LauncherRoot" }
-Write-Host "Run the root launcher, or run ttt2.exe with your own .wua/extracted European v16 title folder."
+Write-Host "Static runtime: $FinalExe"
+if ($LauncherRoot) { Write-Host "Launcher:       $LauncherRoot" }
+if ($QuickPlayRoot) { Write-Host "Quick play:     $QuickPlayRoot" }
+Write-Host "This build is ready for player packaging; end users do not run the recompiler."
