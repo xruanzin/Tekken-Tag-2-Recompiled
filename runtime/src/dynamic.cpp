@@ -1209,6 +1209,12 @@ void execute(PPCContext& ctx, uint8_t* base, uint32_t entry) {
     run(ctx, base, entry, return_address, false);
 }
 
+uint32_t execute_test_instruction(PPCContext& ctx, uint8_t* base,
+                                  uint32_t address, uint32_t word) {
+    const Decoded instruction{address, word, ppc::decode(word)};
+    return execute_one(ctx, base, instruction);
+}
+
 void print_recent_trace() {
     if (t_trace_count == 0) return;
     std::fprintf(stderr, "recent guest instructions (oldest -> newest):\n");
