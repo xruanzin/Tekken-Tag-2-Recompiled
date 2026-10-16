@@ -52,6 +52,9 @@ $NinjaExe = Resolve-ToolPath "ninja.exe"
 $ClangClExe = Resolve-ToolPath "clang-cl.exe" @(
     "C:\Program Files\LLVM\bin\clang-cl.exe"
 )
+$LlvmRcExe = Resolve-ToolPath "llvm-rc.exe" @(
+    "C:\Program Files\LLVM\bin\llvm-rc.exe"
+)
 
 $PythonExe = $null
 $Py = Get-Command "py.exe" -ErrorAction SilentlyContinue
@@ -75,6 +78,7 @@ $ToolDirs = @(
     (Split-Path -Parent $CMakeExe),
     (Split-Path -Parent $NinjaExe),
     (Split-Path -Parent $ClangClExe),
+    (Split-Path -Parent $LlvmRcExe),
     (Split-Path -Parent $PythonExe)
 )
 $PathParts = @($ToolDirs + ($OriginalPath -split ';')) |
@@ -86,6 +90,7 @@ Write-Host "==> Toolchain"
 Write-Host "    CMake:   $CMakeExe"
 Write-Host "    Ninja:   $NinjaExe"
 Write-Host "    ClangCL: $ClangClExe"
+Write-Host "    LLVM RC: $LlvmRcExe"
 Write-Host "    Python:  $PythonExe"
 
 # Verify that the Microsoft C++ Build Tools are installed. clang-cl can locate
@@ -233,6 +238,7 @@ $CommonArgs = @(
 )
 if ($WindowsResource) {
     $CommonArgs += "-DTTT2_WINDOWS_RESOURCE=$WindowsResource"
+    $CommonArgs += "-DCMAKE_RC_COMPILER=$LlvmRcExe"
 }
 
 Write-Host "==> Configuring Windows host tools"
