@@ -150,8 +150,21 @@ void redirect_runtime_log(const std::filesystem::path& game) {
     }
 
     cafe::diagnostic_trace("redirect_runtime_log: stdio descriptors ready");
-    std::setvbuf(stderr, nullptr, _IOLBF, 0);
-    if (stdout_result == 0) std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
+    // Do not call setvbuf/fprintf on the GUI-subsystem CRT streams here.
+    // On some UCRT builds the FILE objects still carry the pre-launch invalid
+    // console state even after fd 1/2 were repaired, and touching them can
+    // trigger the invalid-parameter fast-fail (0xC0000409). Write the first
+    // line through the now-valid descriptor directly. Later diagnostics can
+    // use stderr once ordinary runtime initialization is underway.
+    const std::string first_line =
+        "ttt2: runtime log redirected to " + file.string() + "\r\n";
+    cafe::diagnostic_trace("redirect_runtime_log: _write first line");
+    if (_write(2, first_line.data(), static_cast<unsigned>(first_line.size())) < 0) {
+        cafe::diagnostic_trace("redirect_runtime_log: _write failed");
+    } else {
+        cafe::diagnostic_trace("redirect_runtime_log: _write complete");
+    }
 #else
     bool stdout_redirected = false;
     if (std::freopen(file.c_str(), "w", stderr)) {
@@ -159,9 +172,9 @@ void redirect_runtime_log(const std::filesystem::path& game) {
     }
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     if (stdout_redirected) std::setvbuf(stdout, nullptr, _IOLBF, 0);
-#endif
     std::fprintf(stderr, "ttt2: runtime log redirected to %s\n", file.string().c_str());
     std::fflush(stderr);
+#endif
 }
 
 } // namespace
