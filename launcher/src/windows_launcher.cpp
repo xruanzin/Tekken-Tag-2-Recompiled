@@ -552,9 +552,11 @@ const wchar_t* ready_game_text() {
 
 fs::path find_game_executable() {
     const std::array<fs::path, 3> candidates = {
+        // Public releases ship the generic host beside the launcher. Prefer
+        // it over legacy locally generated executables from older previews.
+        g_root / L"ttt2.exe",
         g_root / L"game" / L"ttt2.exe",
-        g_root / L"build" / L"windows" / L"ttt2.exe",
-        g_root / L"ttt2.exe"
+        g_root / L"build" / L"windows" / L"ttt2.exe"
     };
     std::error_code ec;
     for (const auto& path : candidates) if (fs::is_regular_file(path, ec)) return path;
