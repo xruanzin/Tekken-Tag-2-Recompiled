@@ -146,8 +146,17 @@ Renderer::Renderer() {
         async_shaders_ = *value != '\0' && *value != '0';
     }
     if (async_shaders_) {
-        std::fprintf(stderr, "ttt2: GPU: asynchronous shader compilation enabled\n");
-        shader_compile_thread_ = std::thread([this] { shader_worker_main(); });
+        const uint32_t logical = std::max(1u, std::thread::hardware_concurrency());
+        const uint32_t workers = logical >= 6 ? 2u : 1u;
+        std::fprintf(stderr, "ttt2: GPU: asynchronous shader compilation enabled (%u workers)\n", workers);
+        char shader_workers[128]{};
+        std::snprintf(shader_workers, sizeof(shader_workers),
+                      "GPU shader_compile_workers=%u logical_cpus=%u", workers, logical);
+        cafe::diagnostic_trace(shader_workers);
+        shader_compile_threads_.reserve(workers);
+        for (uint32_t i = 0; i < workers; ++i) {
+            shader_compile_threads_.emplace_back([this] { shader_worker_main(); });
+        }
     }
     load_pipeline_cache();
     // Pipeline creation is a separate expensive driver operation. Keep it
@@ -197,7 +206,9 @@ Renderer::~Renderer() {
         shader_compile_stop_ = true;
     }
     shader_compile_cv_.notify_all();
-    if (shader_compile_thread_.joinable()) shader_compile_thread_.join();
+    for (std::thread& worker : shader_compile_threads_) {
+        if (worker.joinable()) worker.join();
+    }
 
     {
         std::lock_guard lock(pipeline_compile_mutex_);
