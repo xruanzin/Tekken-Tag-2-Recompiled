@@ -58,6 +58,13 @@ PPCContext* current_context();
 void set_current_context(PPCContext* ctx);
 
 [[noreturn]] void fatal(const char* format, ...) __attribute__((format(printf, 1, 2)));
+
+// Raw boot/crash tracing is intentionally independent of stdout/stderr so it
+// still works when the Windows GUI-subsystem process has no console handles
+// or the ordinary runtime log cannot be flushed.
+void begin_diagnostic_trace();
+void diagnostic_trace(const char* stage);
+
 void install_fault_handler();
 void print_guest_state(const PPCContext& ctx);
 
