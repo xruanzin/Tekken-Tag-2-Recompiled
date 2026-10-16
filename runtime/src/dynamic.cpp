@@ -6,6 +6,7 @@
 #include "ppc.h"
 #include "rpx.h"
 #include "title/presentation.h"
+#include "host/platform.h"
 
 #include <algorithm>
 #include <atomic>
@@ -16,10 +17,13 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -58,6 +62,12 @@ constexpr size_t kMaxBlockInstructions = 64;
 std::unordered_map<uint32_t, std::unique_ptr<Block>> g_blocks;
 std::mutex g_block_mutex;
 
+std::filesystem::path g_block_cache_path;
+std::unordered_set<uint32_t> g_known_block_starts;
+std::vector<uint32_t> g_pending_block_starts;
+bool g_cache_exit_registered = false;
+constexpr size_t kBlockCacheFlushBatch = 128;
+
 #ifdef _WIN32
 constexpr size_t kJitArenaSize = 8u << 20;
 uint8_t* g_jit_arena = nullptr;
@@ -84,6 +94,71 @@ bool g_enabled = false;
 std::vector<CodeSection> g_code;
 std::unordered_map<uint32_t, uint32_t> g_rel24_targets;
 std::unordered_map<uint32_t, ImportBinding> g_imports;
+
+void flush_block_cache_locked() {
+    if (g_block_cache_path.empty() || g_pending_block_starts.empty()) return;
+    std::ofstream output(g_block_cache_path, std::ios::binary | std::ios::app);
+    if (!output) return;
+    output.write(reinterpret_cast<const char*>(g_pending_block_starts.data()),
+                 static_cast<std::streamsize>(g_pending_block_starts.size() * sizeof(uint32_t)));
+    if (output) g_pending_block_starts.clear();
+}
+
+void flush_block_cache_at_exit() {
+    std::lock_guard lock(g_block_mutex);
+    flush_block_cache_locked();
+}
+
+std::vector<uint32_t> prepare_persistent_block_cache(const std::vector<uint8_t>& rpx_bytes) {
+    std::vector<uint32_t> warm;
+    std::error_code ec;
+    std::filesystem::path directory;
+    if (const char* custom = std::getenv("TTT2_CODE_CACHE_DIR"); custom && *custom) {
+        directory = custom;
+    } else {
+        directory = host::data_directory() / "ttt2" / "code-cache";
+    }
+    std::filesystem::create_directories(directory, ec);
+    if (ec) return warm;
+
+    g_block_cache_path = directory / (sha256_hex(rpx_bytes) + ".blocks-v1");
+    constexpr char kMagic[8] = {'T','T','T','2','B','L','K','1'};
+
+    std::ifstream input(g_block_cache_path, std::ios::binary);
+    if (input) {
+        char magic[8]{};
+        input.read(magic, sizeof(magic));
+        if (input && std::memcmp(magic, kMagic, sizeof(kMagic)) == 0) {
+            uint32_t address = 0;
+            while (input.read(reinterpret_cast<char*>(&address), sizeof(address))) {
+                if (g_known_block_starts.insert(address).second) warm.push_back(address);
+            }
+        } else {
+            input.close();
+            std::filesystem::remove(g_block_cache_path, ec);
+        }
+    }
+
+    if (!std::filesystem::exists(g_block_cache_path, ec)) {
+        std::ofstream output(g_block_cache_path, std::ios::binary | std::ios::trunc);
+        if (output) output.write(kMagic, sizeof(kMagic));
+    }
+
+    if (!g_cache_exit_registered) {
+        std::atexit(flush_block_cache_at_exit);
+        g_cache_exit_registered = true;
+    }
+    return warm;
+}
+
+void remember_block_locked(uint32_t start) {
+    if (g_block_cache_path.empty()) return;
+    if (!g_known_block_starts.insert(start).second) return;
+    g_pending_block_starts.push_back(start);
+    if (g_pending_block_starts.size() >= kBlockCacheFlushBatch) {
+        flush_block_cache_locked();
+    }
+}
 
 bool ends_block(Op op) {
     switch (op) {
@@ -962,6 +1037,7 @@ Block* get_or_build_block(uint32_t start) {
     }
     Block* raw = block.get();
     g_blocks.emplace(start, std::move(block));
+    remember_block_locked(start);
 #ifdef _WIN32
     raw->native = emit_block_thunk(raw);
 #endif
@@ -981,6 +1057,9 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     {
         std::lock_guard block_lock(g_block_mutex);
         g_blocks.clear();
+        g_known_block_starts.clear();
+        g_pending_block_starts.clear();
+        g_block_cache_path.clear();
 #ifdef _WIN32
         reset_jit_arena();
 #endif
@@ -1022,6 +1101,12 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
         g_imports.emplace(import.stub_address, std::move(binding));
     }
 
+    const std::vector<uint32_t> warm_blocks = prepare_persistent_block_cache(rpx_bytes);
+    size_t warmed = 0;
+    for (const uint32_t address : warm_blocks) {
+        if (decoded_at(address) && get_or_build_block(address)) ++warmed;
+    }
+
     g_enabled = true;
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - started)
@@ -1033,6 +1118,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     std::fprintf(stderr, "ttt2: dynamic host: baseline x64 block JIT %s\n",
                  g_jit_enabled && g_jit_arena ? "enabled" : "disabled");
 #endif
+    std::fprintf(stderr, "ttt2: dynamic host: warmed %zu cached code blocks\n", warmed);
 }
 
 bool enabled() {
