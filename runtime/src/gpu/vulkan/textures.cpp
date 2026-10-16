@@ -624,7 +624,17 @@ VkSampler Renderer::sampler(const uint32_t words[3], const float border[4], bool
     if (mip == 0) sci.maxLod = sci.minLod; // no mipmapping
     sci.mipLodBias = static_cast<float>(static_cast<int32_t>(w1 << 0) >> 20) / 64.0f;
     const uint32_t aniso = (w0 >> 19) & 7;
-    if ((mag >= 2 || min >= 2) && aniso > 0) {
+    static const int forced_aniso = [] {
+        const char* value = std::getenv("TTT2_ANISO");
+        if (!value || !*value) return 0;
+        const int parsed = std::atoi(value);
+        return parsed == 2 || parsed == 4 || parsed == 8 || parsed == 16 ? parsed : 0;
+    }();
+    if (forced_aniso > 1 && ((mag & 1) || (min & 1))) {
+        sci.anisotropyEnable = VK_TRUE;
+        sci.maxAnisotropy = std::min<float>(static_cast<float>(forced_aniso),
+                                            ctx_.properties.limits.maxSamplerAnisotropy);
+    } else if ((mag >= 2 || min >= 2) && aniso > 0) {
         sci.anisotropyEnable = VK_TRUE;
         sci.maxAnisotropy = std::min<float>(static_cast<float>(1u << std::min(aniso, 4u)),
                                             ctx_.properties.limits.maxSamplerAnisotropy);

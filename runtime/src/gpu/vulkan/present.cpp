@@ -60,22 +60,89 @@ double now_seconds() {
 } // namespace
 
 // The compute shader that scales a presentation image into the swapchain.
+// flags bit 0: edge anti-aliasing. sharpness: 0 disables adaptive sharpening.
 constexpr const char* kScaleShader = R"(#version 460
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1) writeonly uniform image2D target;
-layout(push_constant) uniform Rect { ivec2 offset; ivec2 size; ivec2 extent; } rect;
+layout(push_constant) uniform Rect {
+    ivec2 offset;
+    ivec2 size;
+    ivec2 extent;
+    float sharpness;
+    uint flags;
+} rect;
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+vec3 filtered(vec2 uv) {
+    vec3 c = textureLod(source, uv, 0.0).rgb;
+    vec2 texel = 1.0 / vec2(textureSize(source, 0));
+    if ((rect.flags & 1u) != 0u) {
+        vec3 n = textureLod(source, uv + vec2(0.0, -texel.y), 0.0).rgb;
+        vec3 s = textureLod(source, uv + vec2(0.0,  texel.y), 0.0).rgb;
+        vec3 w = textureLod(source, uv + vec2(-texel.x, 0.0), 0.0).rgb;
+        vec3 e = textureLod(source, uv + vec2( texel.x, 0.0), 0.0).rgb;
+        float lc = luma(c), ln = luma(n), ls = luma(s), lw = luma(w), le = luma(e);
+        float lo = min(lc, min(min(ln, ls), min(lw, le)));
+        float hi = max(lc, max(max(ln, ls), max(lw, le)));
+        if (hi - lo > max(0.0312, hi * 0.125)) {
+            vec2 dir = vec2(lw - le, ln - ls);
+            float m = max(abs(dir.x), abs(dir.y));
+            if (m > 1e-5) {
+                dir = dir / m * texel * 0.75;
+                c = 0.5 * (textureLod(source, uv - dir, 0.0).rgb +
+                           textureLod(source, uv + dir, 0.0).rgb);
+            }
+        }
+    }
+    if (rect.sharpness > 0.001) {
+        vec3 n = textureLod(source, uv + vec2(0.0, -texel.y), 0.0).rgb;
+        vec3 s = textureLod(source, uv + vec2(0.0,  texel.y), 0.0).rgb;
+        vec3 w = textureLod(source, uv + vec2(-texel.x, 0.0), 0.0).rgb;
+        vec3 e = textureLod(source, uv + vec2( texel.x, 0.0), 0.0).rgb;
+        vec3 blur = 0.25 * (n + s + w + e);
+        c = clamp(c + (c - blur) * rect.sharpness, 0.0, 1.0);
+    }
+    return c;
+}
+
 void main() {
     const ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(xy, rect.extent))) return;
     const ivec2 p = xy - rect.offset;
     vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
     if (all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, rect.size))) {
-        c = vec4(textureLod(source, (vec2(p) + 0.5) / vec2(rect.size), 0.0).rgb, 1.0);
+        vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
+        c = vec4(filtered(uv), 1.0);
     }
     imageStore(target, xy, c);
 }
 )";
+
+bool env_on(const char* name) {
+    const char* value = std::getenv(name);
+    return value && *value && *value != '0';
+}
+
+bool nearest_scaling() {
+    const char* value = std::getenv("TTT2_UPSCALER");
+    return value && std::strcmp(value, "nearest") == 0;
+}
+
+float presentation_sharpness() {
+    const char* mode = std::getenv("TTT2_UPSCALER");
+    if (!mode || std::strcmp(mode, "sharp") != 0) return 0.0f;
+    if (const char* value = std::getenv("TTT2_SHARPEN")) {
+        return std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f);
+    }
+    return 0.25f;
+}
+
+bool presentation_fxaa() {
+    const char* value = std::getenv("TTT2_AA");
+    return value && std::strcmp(value, "fxaa") == 0;
+}
 
 void Renderer::start_presenter() {
     // The compute path needs a presenting compute queue and storage writes
@@ -131,7 +198,7 @@ void Renderer::start_presenter() {
         dli.pBindings = bindings;
         VkDescriptorSetLayout set_layout;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device, &dli, nullptr, &set_layout));
-        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
+        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
         pli.pSetLayouts = &set_layout;
@@ -145,9 +212,15 @@ void Renderer::start_presenter() {
         VK_CHECK(vkCreateComputePipelines(ctx_.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &scale_pipeline_));
         vkDestroyShaderModule(ctx_.device, module, nullptr);
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+        sci.magFilter = sci.minFilter = nearest_scaling() ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
         sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(ctx_.device, &sci, nullptr, &scale_sampler_));
+        std::fprintf(stderr, "ttt2: GPU: presentation %s%s%s\n",
+                     nearest_scaling() ? "nearest" : "linear",
+                     presentation_fxaa() ? " + FXAA" : "",
+                     presentation_sharpness() > 0.001f ? " + adaptive sharpening" : "");
+    } else if (presentation_fxaa() || presentation_sharpness() > 0.001f) {
+        std::fprintf(stderr, "ttt2: GPU: presentation effects unavailable on the blit path\n");
     }
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.queueFamilyIndex = present_family_;
@@ -971,11 +1044,18 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         di.pImageMemoryBarriers = &ib;
         vkCmdPipelineBarrier2(present_cmd_, &di);
     };
-    // Letterboxed to the TV image's aspect ratio.
-    const double scale = std::min(double(swapchain_extent_.width) / src.width, double(swapchain_extent_.height) / src.height);
-    const int32_t w = static_cast<int32_t>(src.width * scale), h = static_cast<int32_t>(src.height * scale);
-    const int32_t x = (static_cast<int32_t>(swapchain_extent_.width) - w) / 2;
-    const int32_t y = (static_cast<int32_t>(swapchain_extent_.height) - h) / 2;
+    // Preserve 16:9 by default; TTT2_STRETCH=1 fills the whole output.
+    int32_t x = 0, y = 0;
+    int32_t w = static_cast<int32_t>(swapchain_extent_.width);
+    int32_t h = static_cast<int32_t>(swapchain_extent_.height);
+    if (!env_on("TTT2_STRETCH")) {
+        const double scale = std::min(double(swapchain_extent_.width) / src.width,
+                                      double(swapchain_extent_.height) / src.height);
+        w = static_cast<int32_t>(src.width * scale);
+        h = static_cast<int32_t>(src.height * scale);
+        x = (static_cast<int32_t>(swapchain_extent_.width) - w) / 2;
+        y = (static_cast<int32_t>(swapchain_extent_.height) - h) / 2;
+    }
     if (compute_present_) {
         transition(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
         vkCmdBindPipeline(present_cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, scale_pipeline_);
@@ -992,9 +1072,16 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[1].pImageInfo = &target;
         ctx_.cmd_push_descriptor_set(present_cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, scale_layout_, 0, 2, writes);
-        const int32_t rect[6] = {x, y, w, h, static_cast<int32_t>(swapchain_extent_.width),
-                                 static_cast<int32_t>(swapchain_extent_.height)};
-        vkCmdPushConstants(present_cmd_, scale_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof rect, rect);
+        struct PresentConstants {
+            int32_t offset[2];
+            int32_t size[2];
+            int32_t extent[2];
+            float sharpness;
+            uint32_t flags;
+        } rect{{x, y}, {w, h},
+               {static_cast<int32_t>(swapchain_extent_.width), static_cast<int32_t>(swapchain_extent_.height)},
+               presentation_sharpness(), presentation_fxaa() ? 1u : 0u};
+        vkCmdPushConstants(present_cmd_, scale_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof rect, &rect);
         vkCmdDispatch(present_cmd_, (swapchain_extent_.width + 15) / 16, (swapchain_extent_.height + 15) / 16, 1);
         transition(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     } else {
@@ -1010,7 +1097,7 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         blit.dstOffsets[0] = {x, y, 0};
         blit.dstOffsets[1] = {x + w, y + h, 1};
         vkCmdBlitImage(present_cmd_, src.image, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                       &blit, VK_FILTER_LINEAR);
+                       &blit, nearest_scaling() ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
         transition(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     }
     VK_CHECK(vkEndCommandBuffer(present_cmd_));
