@@ -124,7 +124,7 @@ void host_main(void* argument) {
     uint32_t exit_value;
     if (setjmp(t->exit_jump) == 0) {
         const uint32_t entry = field<uint32_t>(t->guest, kEntry);
-        cafe_ppc_lookup(entry)(t->ctx, guest_base());
+        execute_guest(t->ctx, entry);
         exit_value = t->ctx.r[3];
     } else {
         exit_value = t->ctx.r[3]; // OSExitThread left its argument here
