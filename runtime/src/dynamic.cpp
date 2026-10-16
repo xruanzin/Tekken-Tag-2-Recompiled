@@ -9,6 +9,7 @@
 #include "host/platform.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -41,6 +42,21 @@ namespace cafe::dynamic {
 namespace {
 
 using ppc::Op;
+
+struct TraceEntry {
+    uint32_t address{};
+    uint32_t word{};
+};
+constexpr size_t kTraceEntries = 64;
+thread_local std::array<TraceEntry, kTraceEntries> t_trace{};
+thread_local size_t t_trace_cursor = 0;
+thread_local size_t t_trace_count = 0;
+
+void remember_instruction(uint32_t address, uint32_t word) {
+    t_trace[t_trace_cursor] = {address, word};
+    t_trace_cursor = (t_trace_cursor + 1) % kTraceEntries;
+    t_trace_count = std::min(t_trace_count + 1, kTraceEntries);
+}
 
 struct Decoded {
     uint32_t address{};
@@ -385,6 +401,7 @@ void fill_write(PPCContext& ctx, uint32_t d, double value) {
 uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t a = ins.address;
     const uint32_t w = ins.word;
+    remember_instruction(a, w);
     const Op op = ins.op;
     const uint32_t d = ppc::rd(w);
     const uint32_t ra = ppc::ra(w);
@@ -1190,6 +1207,18 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 void execute(PPCContext& ctx, uint8_t* base, uint32_t entry) {
     const uint32_t return_address = ctx.lr;
     run(ctx, base, entry, return_address, false);
+}
+
+void print_recent_trace() {
+    if (t_trace_count == 0) return;
+    std::fprintf(stderr, "recent guest instructions (oldest -> newest):\n");
+    const size_t first = (t_trace_cursor + kTraceEntries - t_trace_count) % kTraceEntries;
+    for (size_t i = 0; i < t_trace_count; ++i) {
+        const TraceEntry& e = t_trace[(first + i) % kTraceEntries];
+        const Op op = ppc::decode(e.word);
+        std::fprintf(stderr, "  0x%08X  %08X  %s\n",
+                     e.address, e.word, ppc::op_name(op));
+    }
 }
 
 } // namespace cafe::dynamic
