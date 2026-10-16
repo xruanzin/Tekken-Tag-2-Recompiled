@@ -1215,6 +1215,35 @@ uint32_t execute_test_instruction(PPCContext& ctx, uint8_t* base,
     return execute_one(ctx, base, instruction);
 }
 
+void initialize_test_program(uint32_t base_address,
+                             const std::vector<uint32_t>& words) {
+    std::lock_guard lock(g_mutex);
+    g_code.clear();
+    g_rel24_targets.clear();
+    g_imports.clear();
+    {
+        std::lock_guard block_lock(g_block_mutex);
+        g_blocks.clear();
+        g_known_block_starts.clear();
+        g_pending_block_starts.clear();
+        g_block_cache_path.clear();
+#ifdef _WIN32
+        reset_jit_arena();
+#endif
+    }
+
+    CodeSection section;
+    section.begin = base_address;
+    section.end = base_address + static_cast<uint32_t>(words.size() * 4);
+    section.code.reserve(words.size());
+    for (size_t i = 0; i < words.size(); ++i) {
+        const uint32_t address = base_address + static_cast<uint32_t>(i * 4);
+        section.code.push_back({address, words[i], ppc::decode(words[i])});
+    }
+    g_code.push_back(std::move(section));
+    g_enabled = true;
+}
+
 void print_recent_trace() {
     if (t_trace_count == 0) return;
     std::fprintf(stderr, "recent guest instructions (oldest -> newest):\n");
