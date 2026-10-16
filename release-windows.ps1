@@ -120,15 +120,15 @@ Set-Content -LiteralPath (Join-Path $OutDir "README.txt") -Encoding UTF8 -Value 
 # Prove this is an ahead-of-time player build from the generated metadata
 # itself. Do not depend on runtime log creation: a WINDOWS-subsystem executable
 # may legitimately complete --verify without creating a console-visible log.
-$GeneratedImports = Join-Path $Root "generated\ttt2\imports.cpp"
+$GeneratedImports = Join-Path $Root "generated\ttt2-full\imports.cpp"
 if (-not (Test-Path -LiteralPath $GeneratedImports -PathType Leaf)) {
-    throw "Refusing to package: generated\ttt2\imports.cpp was not found. Run the static build first."
+    throw "Refusing to package: generated\ttt2-full\imports.cpp was not found. Run the static build first."
 }
 $GeneratedText = Get-Content -LiteralPath $GeneratedImports -Raw
 $ProgramInfoPattern = 'cafe_program_info\s*=\s*\{[\s\S]*?"([0-9a-fA-F]{64})"[\s\S]*?,\s*([0-9]+),\s*([0-9]+)\s*\};'
 $ProgramInfoMatch = [regex]::Match($GeneratedText, $ProgramInfoPattern)
 if (-not $ProgramInfoMatch.Success) {
-    throw "Refusing to package: could not read static ProgramInfo from generated\ttt2\imports.cpp."
+    throw "Refusing to package: could not read static ProgramInfo from generated\ttt2-full\imports.cpp."
 }
 $GeneratedDigest = $ProgramInfoMatch.Groups[1].Value.ToLowerInvariant()
 $CompiledEntries = [int64]$ProgramInfoMatch.Groups[2].Value
