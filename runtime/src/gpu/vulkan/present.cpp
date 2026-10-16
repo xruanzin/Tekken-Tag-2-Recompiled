@@ -30,6 +30,7 @@
 #include "gpu/gpu.h"
 #include "host/window.h"
 #include "host/platform.h"
+#include "gpu/vulkan/fsr1_embedded.h"
 
 #include "cafe/runtime.h"
 
@@ -62,15 +63,31 @@ double now_seconds() {
 // The compute shader that scales a presentation image into the swapchain.
 // flags bit 0: edge anti-aliasing. sharpness: 0 disables adaptive sharpening.
 constexpr const char* kScaleShader = R"(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#define A_GPU 1
+#define A_GLSL 1
+#include "ffx_a.h"
+
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1) writeonly uniform image2D target;
+
+#define FSR_EASU_F 1
+AF4 FsrEasuRF(AF2 p) { return textureGather(source, p, 0); }
+AF4 FsrEasuGF(AF2 p) { return textureGather(source, p, 1); }
+AF4 FsrEasuBF(AF2 p) { return textureGather(source, p, 2); }
+#include "ffx_fsr1.h"
+
 layout(push_constant) uniform Rect {
     ivec2 offset;
     ivec2 size;
     ivec2 extent;
     float sharpness;
-    uint flags;
+    uint flags; // bit 0 FXAA, bit 1 FidelityFX FSR 1 EASU
+    uvec4 con0;
+    uvec4 con1;
+    uvec4 con2;
+    uvec4 con3;
 } rect;
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -113,8 +130,14 @@ void main() {
     const ivec2 p = xy - rect.offset;
     vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
     if (all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, rect.size))) {
-        vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
-        c = vec4(filtered(uv), 1.0);
+        if ((rect.flags & 2u) != 0u) {
+            AF3 fsr;
+            FsrEasuF(fsr, AU2(p), rect.con0, rect.con1, rect.con2, rect.con3);
+            c = vec4(vec3(fsr), 1.0);
+        } else {
+            vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
+            c = vec4(filtered(uv), 1.0);
+        }
     }
     imageStore(target, xy, c);
 }
@@ -129,6 +152,42 @@ bool nearest_scaling() {
     const char* value = std::getenv("TTT2_UPSCALER");
     return value && std::strcmp(value, "nearest") == 0;
 }
+
+bool fsr1_scaling() {
+    const char* value = std::getenv("TTT2_UPSCALER");
+    return value && std::strcmp(value, "fsr1") == 0;
+}
+
+uint32_t float_bits(float value) {
+    uint32_t bits = 0;
+    static_assert(sizeof bits == sizeof value);
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+shaderc_include_result* scale_include(void*, const char* requested, int, const char*, size_t) {
+    auto* result = new shaderc_include_result{};
+    if (std::strcmp(requested, "ffx_a.h") == 0) {
+        result->source_name = "ffx_a.h";
+        result->source_name_length = 7;
+        result->content = fsr1_embedded::kFfxA;
+        result->content_length = std::strlen(fsr1_embedded::kFfxA);
+    } else if (std::strcmp(requested, "ffx_fsr1.h") == 0) {
+        result->source_name = "ffx_fsr1.h";
+        result->source_name_length = 10;
+        result->content = fsr1_embedded::kFfxFsr1;
+        result->content_length = std::strlen(fsr1_embedded::kFfxFsr1);
+    } else {
+        static constexpr const char kError[] = "unknown shader include";
+        result->source_name = "";
+        result->source_name_length = 0;
+        result->content = kError;
+        result->content_length = sizeof(kError) - 1;
+    }
+    return result;
+}
+
+void scale_include_release(void*, shaderc_include_result* result) { delete result; }
 
 float presentation_sharpness() {
     const char* mode = std::getenv("TTT2_UPSCALER");
@@ -177,6 +236,7 @@ void Renderer::start_presenter() {
     if (compute_present_) {
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+        shaderc_compile_options_set_include_callbacks(options, scale_include, scale_include_release, nullptr);
         shaderc_compilation_result_t result = shaderc_compile_into_spv(compiler_, kScaleShader, std::strlen(kScaleShader),
                                                                        shaderc_compute_shader, "scale", "main", options);
         shaderc_compile_options_release(options);
@@ -198,7 +258,7 @@ void Renderer::start_presenter() {
         dli.pBindings = bindings;
         VkDescriptorSetLayout set_layout;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device, &dli, nullptr, &set_layout));
-        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 96};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
         pli.pSetLayouts = &set_layout;
@@ -215,9 +275,10 @@ void Renderer::start_presenter() {
         sci.magFilter = sci.minFilter = nearest_scaling() ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
         sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(ctx_.device, &sci, nullptr, &scale_sampler_));
+        const char* mode = fsr1_scaling() ? "FidelityFX FSR 1 EASU" : nearest_scaling() ? "nearest" : "linear";
         std::fprintf(stderr, "ttt2: GPU: presentation %s%s%s\n",
-                     nearest_scaling() ? "nearest" : "linear",
-                     presentation_fxaa() ? " + FXAA" : "",
+                     mode,
+                     presentation_fxaa() && !fsr1_scaling() ? " + FXAA" : "",
                      presentation_sharpness() > 0.001f ? " + adaptive sharpening" : "");
     } else if (presentation_fxaa() || presentation_sharpness() > 0.001f) {
         std::fprintf(stderr, "ttt2: GPU: presentation effects unavailable on the blit path\n");
@@ -1072,15 +1133,46 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[1].pImageInfo = &target;
         ctx_.cmd_push_descriptor_set(present_cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, scale_layout_, 0, 2, writes);
+        const bool use_fsr1 = fsr1_scaling() &&
+                              w >= static_cast<int32_t>(src.width) &&
+                              h >= static_cast<int32_t>(src.height);
         struct PresentConstants {
             int32_t offset[2];
             int32_t size[2];
             int32_t extent[2];
             float sharpness;
             uint32_t flags;
-        } rect{{x, y}, {w, h},
-               {static_cast<int32_t>(swapchain_extent_.width), static_cast<int32_t>(swapchain_extent_.height)},
-               presentation_sharpness(), presentation_fxaa() ? 1u : 0u};
+            uint32_t con0[4];
+            uint32_t con1[4];
+            uint32_t con2[4];
+            uint32_t con3[4];
+        } rect{};
+        rect.offset[0] = x; rect.offset[1] = y;
+        rect.size[0] = w; rect.size[1] = h;
+        rect.extent[0] = static_cast<int32_t>(swapchain_extent_.width);
+        rect.extent[1] = static_cast<int32_t>(swapchain_extent_.height);
+        rect.sharpness = presentation_sharpness();
+        rect.flags = (presentation_fxaa() && !use_fsr1 ? 1u : 0u) | (use_fsr1 ? 2u : 0u);
+
+        if (use_fsr1) {
+            const float in_w = static_cast<float>(src.width), in_h = static_cast<float>(src.height);
+            const float out_w = static_cast<float>(w), out_h = static_cast<float>(h);
+            rect.con0[0] = float_bits(in_w / out_w);
+            rect.con0[1] = float_bits(in_h / out_h);
+            rect.con0[2] = float_bits(0.5f * in_w / out_w - 0.5f);
+            rect.con0[3] = float_bits(0.5f * in_h / out_h - 0.5f);
+            rect.con1[0] = float_bits(1.0f / in_w);
+            rect.con1[1] = float_bits(1.0f / in_h);
+            rect.con1[2] = float_bits(1.0f / in_w);
+            rect.con1[3] = float_bits(-1.0f / in_h);
+            rect.con2[0] = float_bits(-1.0f / in_w);
+            rect.con2[1] = float_bits(2.0f / in_h);
+            rect.con2[2] = float_bits(1.0f / in_w);
+            rect.con2[3] = float_bits(2.0f / in_h);
+            rect.con3[0] = float_bits(0.0f);
+            rect.con3[1] = float_bits(4.0f / in_h);
+            rect.con3[2] = rect.con3[3] = 0;
+        }
         vkCmdPushConstants(present_cmd_, scale_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof rect, &rect);
         vkCmdDispatch(present_cmd_, (swapchain_extent_.width + 15) / 16, (swapchain_extent_.height + 15) / 16, 1);
         transition(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);

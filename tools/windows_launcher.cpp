@@ -120,7 +120,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"Tela e apresentação", L"Modo de exibição", L"Resolução de saída", L"FPS de apresentação",
      L"Preencher a tela", L"Qualidade gráfica", L"Resolução interna", L"Antialiasing",
      L"Upscaling / filtro", L"Filtro anisotrópico", L"Nitidez",
-     L"FSR 1, DLSS e XeSS aparecem como referência, mas ficam bloqueados até o renderer possuir integração real.",
+     L"FSR 1 EASU está integrado ao Vulkan. DLSS e XeSS ficam bloqueados até existirem backends específicos.",
      L"Jogo e controles", L"Idioma do jogo", L"Ícones do controle", L"Áudio", L"Volume",
      L"Idioma do launcher", L"Idioma da interface", L"A alteração da interface é aplicada imediatamente e salva no launcher.",
      L"Selecione uma pasta com code\\Tekken.rpx ou um arquivo .wua válido.",
@@ -133,7 +133,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"Display and presentation", L"Display mode", L"Output resolution", L"Presentation FPS",
      L"Fill the screen", L"Graphics quality", L"Internal resolution", L"Anti-aliasing",
      L"Upscaling / filter", L"Anisotropic filtering", L"Sharpness",
-     L"FSR 1, DLSS and XeSS are listed for reference but remain locked until the renderer has a real integration.",
+     L"FSR 1 EASU is integrated into Vulkan. DLSS and XeSS remain locked until dedicated backends exist.",
      L"Game and controls", L"Game language", L"Controller icons", L"Audio", L"Volume",
      L"Launcher language", L"Interface language", L"Interface language changes are applied immediately and saved.",
      L"Select a folder containing code\\Tekken.rpx or a valid .wua file.",
@@ -146,7 +146,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"Pantalla y presentación", L"Modo de pantalla", L"Resolución de salida", L"FPS de presentación",
      L"Llenar la pantalla", L"Calidad gráfica", L"Resolución interna", L"Antialiasing",
      L"Escalado / filtro", L"Filtrado anisotrópico", L"Nitidez",
-     L"FSR 1, DLSS y XeSS aparecen como referencia, pero permanecen bloqueados hasta tener integración real.",
+     L"FSR 1 EASU está integrado en Vulkan. DLSS y XeSS permanecen bloqueados hasta tener backends dedicados.",
      L"Juego y controles", L"Idioma del juego", L"Iconos del mando", L"Audio", L"Volumen",
      L"Idioma del launcher", L"Idioma de la interfaz", L"El idioma se aplica inmediatamente y se guarda.",
      L"Selecciona una carpeta con code\\Tekken.rpx o un archivo .wua válido.",
@@ -159,7 +159,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"Affichage et présentation", L"Mode d'affichage", L"Résolution de sortie", L"FPS de présentation",
      L"Remplir l'écran", L"Qualité graphique", L"Résolution interne", L"Anticrénelage",
      L"Mise à l'échelle / filtre", L"Filtrage anisotrope", L"Netteté",
-     L"FSR 1, DLSS et XeSS sont affichés à titre indicatif mais restent verrouillés sans intégration réelle.",
+     L"FSR 1 EASU est intégré à Vulkan. DLSS et XeSS restent verrouillés sans backends dédiés.",
      L"Jeu et contrôles", L"Langue du jeu", L"Icônes de manette", L"Audio", L"Volume",
      L"Langue du launcher", L"Langue de l'interface", L"Le changement de langue est immédiat et enregistré.",
      L"Sélectionnez un dossier contenant code\\Tekken.rpx ou un fichier .wua valide.",
@@ -172,7 +172,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"Anzeige und Präsentation", L"Anzeigemodus", L"Ausgabeauflösung", L"Präsentations-FPS",
      L"Bildschirm ausfüllen", L"Grafikqualität", L"Interne Auflösung", L"Kantenglättung",
      L"Upscaling / Filter", L"Anisotrope Filterung", L"Schärfe",
-     L"FSR 1, DLSS und XeSS werden angezeigt, bleiben aber bis zu einer echten Renderer-Integration gesperrt.",
+     L"FSR 1 EASU ist in Vulkan integriert. DLSS und XeSS bleiben ohne eigene Backends gesperrt.",
      L"Spiel und Steuerung", L"Spielsprache", L"Controller-Symbole", L"Audio", L"Lautstärke",
      L"Launcher-Sprache", L"Sprache der Oberfläche", L"Die Sprache wird sofort angewendet und gespeichert.",
      L"Wähle einen Ordner mit code\\Tekken.rpx oder eine gültige .wua-Datei.",
@@ -185,7 +185,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"Schermo e presentazione", L"Modalità schermo", L"Risoluzione di uscita", L"FPS di presentazione",
      L"Riempi lo schermo", L"Qualità grafica", L"Risoluzione interna", L"Antialiasing",
      L"Upscaling / filtro", L"Filtro anisotropico", L"Nitidezza",
-     L"FSR 1, DLSS e XeSS sono mostrati come riferimento ma restano bloccati finché non esiste una vera integrazione.",
+     L"FSR 1 EASU è integrato in Vulkan. DLSS e XeSS restano bloccati finché non esistono backend dedicati.",
      L"Gioco e controlli", L"Lingua del gioco", L"Icone controller", L"Audio", L"Volume",
      L"Lingua del launcher", L"Lingua interfaccia", L"La lingua viene applicata subito e salvata.",
      L"Seleziona una cartella con code\\Tekken.rpx o un file .wua valido.",
@@ -198,7 +198,7 @@ const std::array<LangTable, 7> kLanguages = {{
      L"画面と表示", L"表示モード", L"出力解像度", L"表示 FPS",
      L"画面いっぱいに表示", L"グラフィック品質", L"内部解像度", L"アンチエイリアス",
      L"アップスケール / フィルター", L"異方性フィルタリング", L"シャープネス",
-     L"FSR 1 / DLSS / XeSS は参考表示です。実際の統合が完了するまで選択できません。",
+     L"FSR 1 EASU は Vulkan に統合済みです。DLSS / XeSS は専用バックエンド実装まで無効です。",
      L"ゲームとコントローラー", L"ゲーム言語", L"ボタン表示", L"オーディオ", L"音量",
      L"ランチャー言語", L"インターフェイス言語", L"言語変更はすぐに適用され保存されます。",
      L"code\\Tekken.rpx を含むフォルダー、または有効な .wua を選択してください。",
@@ -302,7 +302,7 @@ void load_config() {
     g_cfg.fill_screen = ini_int(L"Display", L"FillScreen", 0) != 0;
     g_cfg.render_scale = std::clamp(ini_int(L"Graphics", L"RenderScale", 1), 0, 4);
     g_cfg.aa = std::clamp(ini_int(L"Graphics", L"AA", 1), 0, 1);
-    g_cfg.upscaler = std::clamp(ini_int(L"Graphics", L"Upscaler", 0), 0, 2);
+    g_cfg.upscaler = std::clamp(ini_int(L"Graphics", L"Upscaler", 0), 0, 3);
     g_cfg.aniso = std::clamp(ini_int(L"Graphics", L"Anisotropy", 2), 0, 4);
     g_cfg.sharpness = std::clamp(ini_int(L"Graphics", L"Sharpness", 25), 0, 100);
     g_cfg.game_language = std::clamp(ini_int(L"Game", L"Language", 0), 0, 8);
@@ -422,8 +422,8 @@ void apply_environment() {
     set_env(L"TTT2_FPS", g_cfg.fps == 0 ? L"" : std::to_wstring(fps_values[g_cfg.fps]));
 
     set_env(L"TTT2_AA", g_cfg.aa == 1 ? L"fxaa" : L"");
-    static constexpr const wchar_t* upscale[] = {L"linear", L"nearest", L"sharp"};
-    set_env(L"TTT2_UPSCALER", upscale[std::clamp(g_cfg.upscaler, 0, 2)]);
+    static constexpr const wchar_t* upscale[] = {L"linear", L"nearest", L"sharp", L"fsr1"};
+    set_env(L"TTT2_UPSCALER", upscale[std::clamp(g_cfg.upscaler, 0, 3)]);
     wchar_t sharp[32]{};
     std::swprintf(sharp, std::size(sharp), L"%.2f", g_cfg.sharpness / 100.0);
     set_env(L"TTT2_SHARPEN", sharp);
@@ -553,7 +553,7 @@ void sync_from_controls() {
     if (g_fill) g_cfg.fill_screen = SendMessageW(g_fill, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (g_render_scale) g_cfg.render_scale = combo_sel(g_render_scale);
     if (g_aa) g_cfg.aa = combo_sel(g_aa);
-    if (g_upscaler) g_cfg.upscaler = std::min(combo_sel(g_upscaler), 2);
+    if (g_upscaler) g_cfg.upscaler = std::min(combo_sel(g_upscaler), 3);
     if (g_aniso) g_cfg.aniso = combo_sel(g_aniso);
     if (g_sharpen) g_cfg.sharpness = static_cast<int>(SendMessageW(g_sharpen, TBM_GETPOS, 0, 0));
     if (g_game_language) g_cfg.game_language = combo_sel(g_game_language);
@@ -580,13 +580,13 @@ void apply_preset(int preset) {
     if (preset == 1) {
         SendMessageW(g_render_scale, CB_SETCURSEL, 1, 0);
         SendMessageW(g_aa, CB_SETCURSEL, 0, 0);
-        SendMessageW(g_upscaler, CB_SETCURSEL, 2, 0);
+        SendMessageW(g_upscaler, CB_SETCURSEL, 3, 0);
         SendMessageW(g_aniso, CB_SETCURSEL, 1, 0);
         SendMessageW(g_sharpen, TBM_SETPOS, TRUE, 35);
     } else if (preset == 2) {
         SendMessageW(g_render_scale, CB_SETCURSEL, 1, 0);
         SendMessageW(g_aa, CB_SETCURSEL, 1, 0);
-        SendMessageW(g_upscaler, CB_SETCURSEL, 2, 0);
+        SendMessageW(g_upscaler, CB_SETCURSEL, 3, 0);
         SendMessageW(g_aniso, CB_SETCURSEL, 2, 0);
         SendMessageW(g_sharpen, TBM_SETPOS, TRUE, 25);
     } else if (preset == 3) {
@@ -716,7 +716,7 @@ void create_graphics() {
 
     label(page, tr(T_UPSCALER), 24, 200);
     g_upscaler = make_combo(page, ID_UPSCALER, 24, 228, 300,
-                            {L"Linear", L"Nearest", L"Adaptive Sharp", L"AMD FSR 1  — unavailable",
+                            {L"Linear", L"Nearest", L"Adaptive Sharp", L"AMD FidelityFX FSR 1 (EASU)",
                              L"NVIDIA DLSS — unavailable", L"Intel XeSS — unavailable"}, g_cfg.upscaler);
 
     label(page, tr(T_ANISO), 410, 200);
@@ -861,12 +861,12 @@ void handle_browse() {
 
 void handle_upscaler_change() {
     const int selected = combo_sel(g_upscaler);
-    if (selected <= 2) {
+    if (selected <= 3) {
         mark_custom();
         return;
     }
     MessageBoxW(g_main, tr(T_UNSUPPORTED_UPSCALER), L"TTT2 Launcher", MB_ICONINFORMATION | MB_OK);
-    SendMessageW(g_upscaler, CB_SETCURSEL, g_cfg.upscaler <= 2 ? g_cfg.upscaler : 0, 0);
+    SendMessageW(g_upscaler, CB_SETCURSEL, g_cfg.upscaler <= 3 ? g_cfg.upscaler : 0, 0);
 }
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
