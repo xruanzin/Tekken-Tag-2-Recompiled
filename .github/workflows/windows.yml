@@ -107,6 +107,7 @@ jobs:
           Copy-Item "build\windows\Play Tekken Tag Tournament 2.exe" (Join-Path $Package "Play Tekken Tag Tournament 2.exe") -Force
           Copy-Item "build\windows\ttt2.exe" (Join-Path $Bin "ttt2-runtime.exe") -Force
           Copy-Item "README.md" (Join-Path $Package "README.md") -Force
+          Copy-Item "README-Windows.txt" (Join-Path $Package "README-Windows.txt") -Force
           Copy-Item "LICENSE" (Join-Path $Package "LICENSE") -Force
 
           @"
