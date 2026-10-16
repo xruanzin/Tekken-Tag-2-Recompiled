@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -298,6 +299,40 @@ fs::path module_path() {
     if (length == 0 || length >= buffer.size()) return {};
     buffer.resize(length);
     return fs::path(buffer);
+}
+
+void launcher_trace(const std::wstring& message, bool truncate = false) {
+    const fs::path directory = g_root / L"user";
+    CreateDirectoryW(directory.c_str(), nullptr);
+    const fs::path path = directory / L"launcher_trace.log";
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, truncate ? CREATE_ALWAYS : OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t prefix[160]{};
+    std::swprintf(prefix, std::size(prefix),
+                  L"%04u-%02u-%02u %02u:%02u:%02u.%03u [pid=%lu tid=%lu] ",
+                  now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+                  now.wSecond, now.wMilliseconds,
+                  static_cast<unsigned long>(GetCurrentProcessId()),
+                  static_cast<unsigned long>(GetCurrentThreadId()));
+    const std::wstring line = std::wstring(prefix) + message + L"\r\n";
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, line.c_str(),
+                                           static_cast<int>(line.size()), nullptr, 0,
+                                           nullptr, nullptr);
+    if (bytes > 0) {
+        std::vector<char> utf8(static_cast<size_t>(bytes));
+        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()),
+                            utf8.data(), bytes, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+        FlushFileBuffers(file);
+    }
+    CloseHandle(file);
 }
 
 std::wstring lower(std::wstring text) {
@@ -690,7 +725,11 @@ void apply_environment() {
 }
 
 bool verify_game_source(const fs::path& game, bool show_error) {
-    if (!valid_game(game) || g_exe.empty()) return false;
+    launcher_trace(L"verify requested: " + game.wstring());
+    if (!valid_game(game) || g_exe.empty()) {
+        launcher_trace(L"verify rejected before process creation (invalid source or missing runtime)");
+        return false;
+    }
 
     // Keep verification isolated from graphics/audio/performance settings.
     // The release builder verifies successfully with only TTT2_USER_DIR set;
@@ -712,17 +751,26 @@ bool verify_game_source(const fs::path& game, bool show_error) {
     const BOOL ok = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
                                    CREATE_NO_WINDOW, nullptr, working.c_str(), &startup, &process);
     if (!ok) {
+        launcher_trace(L"verify CreateProcessW failed, Win32 error=" +
+                       std::to_wstring(GetLastError()));
         if (show_error) {
             MessageBoxW(g_main, L"Could not validate the selected game source.",
                         L"Tekken Tag Tournament 2", MB_ICONERROR | MB_OK);
         }
         return false;
     }
+    launcher_trace(L"verify runtime started, pid=" + std::to_wstring(process.dwProcessId));
     CloseHandle(process.hThread);
     WaitForSingleObject(process.hProcess, INFINITE);
     DWORD exit_code = 1;
     GetExitCodeProcess(process.hProcess, &exit_code);
     CloseHandle(process.hProcess);
+    {
+        wchar_t code[32]{};
+        std::swprintf(code, std::size(code), L"0x%08lX",
+                      static_cast<unsigned long>(exit_code));
+        launcher_trace(L"verify runtime exited, code=" + std::wstring(code));
+    }
 
     if (exit_code == 0) {
         g_verified_game = game.wstring();
@@ -773,6 +821,7 @@ bool verify_game_source(const fs::path& game, bool show_error) {
 }
 
 bool launch_game(bool wait_for_exit = false) {
+    launcher_trace(L"launch requested: " + g_cfg.game.wstring());
     if (!valid_game(g_cfg.game)) {
         MessageBoxW(g_main, tr(T_BAD_GAME), L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
         return false;
@@ -800,19 +849,42 @@ bool launch_game(bool wait_for_exit = false) {
     const BOOL ok = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
                                    CREATE_NO_WINDOW, nullptr, working.c_str(), &startup, &process);
     if (!ok) {
-        const std::wstring message = L"Failed to start ttt2.exe. Windows error: " + std::to_wstring(GetLastError());
+        const DWORD error = GetLastError();
+        launcher_trace(L"game CreateProcessW failed, Win32 error=" + std::to_wstring(error));
+        const std::wstring message = L"Failed to start ttt2.exe. Windows error: " + std::to_wstring(error);
         MessageBoxW(g_main, message.c_str(), L"TTT2 Launcher", MB_ICONERROR | MB_OK);
         return false;
     }
+    const DWORD child_pid = process.dwProcessId;
+    launcher_trace(L"game runtime started, pid=" + std::to_wstring(child_pid));
     CloseHandle(process.hThread);
     if (wait_for_exit) {
         WaitForSingleObject(process.hProcess, INFINITE);
         DWORD exit_code = 1;
         GetExitCodeProcess(process.hProcess, &exit_code);
         CloseHandle(process.hProcess);
+        wchar_t code[32]{};
+        std::swprintf(code, std::size(code), L"0x%08lX",
+                      static_cast<unsigned long>(exit_code));
+        launcher_trace(L"game runtime exited, pid=" + std::to_wstring(child_pid) +
+                       L" code=" + std::wstring(code));
         return exit_code == 0;
     }
-    CloseHandle(process.hProcess);
+
+    // Keep the process handle in a small monitor thread so an immediate crash
+    // is recorded even though the launcher itself does not block on the game.
+    HANDLE child = process.hProcess;
+    std::thread([child, child_pid] {
+        WaitForSingleObject(child, INFINITE);
+        DWORD exit_code = 1;
+        GetExitCodeProcess(child, &exit_code);
+        CloseHandle(child);
+        wchar_t code[32]{};
+        std::swprintf(code, std::size(code), L"0x%08lX",
+                      static_cast<unsigned long>(exit_code));
+        launcher_trace(L"game runtime exited, pid=" + std::to_wstring(child_pid) +
+                       L" code=" + std::wstring(code));
+    }).detach();
     return true;
 }
 
