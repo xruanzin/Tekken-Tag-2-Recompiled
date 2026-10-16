@@ -74,12 +74,16 @@ if(WIN32)
     ttt2_warnings(ttt2_play)
 endif()
 
-# The port itself. Windows release builds also provide a generic zero-install
-# host that executes the user's RPX dynamically, so users do not need a local
-# C++ compiler just to start the game.
+# The player release is the ahead-of-time recompiled port. The maintainer
+# builds it once from the supported RPX, then ships that ready-to-run binary.
+# End users never run cafe-recomp/CMake/Clang.
 set(TTT2_GENERATED_DIR "" CACHE PATH "cafe-recomp output directory")
 
-if(WIN32 AND NOT TTT2_GENERATED_DIR)
+# Keep the experimental dynamic host available for development comparisons,
+# but never make it the default player/runtime target.
+option(TTT2_EXPERIMENTAL_DYNAMIC_HOST "Build the experimental dynamic PPC host" OFF)
+
+if(WIN32 AND NOT TTT2_GENERATED_DIR AND TTT2_EXPERIMENTAL_DYNAMIC_HOST)
     add_executable(ttt2_dynamic runtime/src/main.cpp runtime/src/dynamic_generated.cpp)
     set_target_properties(ttt2_dynamic PROPERTIES OUTPUT_NAME "ttt2")
     target_link_libraries(ttt2_dynamic PRIVATE cafe_runtime)
@@ -96,8 +100,8 @@ if(WIN32 AND NOT TTT2_GENERATED_DIR)
     ttt2_warnings(ttt2_dynamic)
 endif()
 
-# Ahead-of-time developer build. This remains available for profiling and for
-# comparing the dynamic backend against the original static recompilation.
+# Ahead-of-time static port. This is also the executable used in public player
+# packages; only the maintainer needs the RPX/toolchain during release creation.
 if(TTT2_GENERATED_DIR)
     include(${TTT2_GENERATED_DIR}/sources.cmake)
     add_library(ttt2_generated OBJECT ${CAFE_GENERATED_SOURCES})
