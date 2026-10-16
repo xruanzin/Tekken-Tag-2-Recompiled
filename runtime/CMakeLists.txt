@@ -8,6 +8,7 @@ add_library(cafe_runtime OBJECT
     src/memory.cpp
     src/loader.cpp
     src/dispatch.cpp
+    src/dynamic.cpp
     src/diagnostics.cpp
     src/exports.cpp
     src/sysmem.cpp
@@ -77,7 +78,7 @@ else()
     find_library(SHADERC_LIBRARY NAMES shaderc_shared shaderc REQUIRED)
     set(TTT2_SHADERC ${SHADERC_LIBRARY})
 endif()
-target_link_libraries(cafe_runtime PUBLIC cafe_rpx cafe_title OpenSSL::Crypto ZArchive::zarchive amd_addrlib cafe_latte
+target_link_libraries(cafe_runtime PUBLIC cafe_rpx cafe_ppc_decode cafe_title OpenSSL::Crypto ZArchive::zarchive amd_addrlib cafe_latte
     Vulkan::Vulkan SDL3::SDL3 ${TTT2_SHADERC})
 # Vulkan structures are initialised with only their sType.
 ttt2_warnings(cafe_runtime)
