@@ -5,6 +5,7 @@
 #include "cafe/runtime.h"
 #include "ppc.h"
 #include "rpx.h"
+#include "title/presentation.h"
 
 #include <algorithm>
 #include <atomic>
@@ -893,9 +894,22 @@ void initialize_data_imports() {
     }
 }
 
-void execute(PPCContext& ctx, uint8_t* base, uint32_t entry) {
+void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
+         bool suppress_presentation_hook) {
     uint32_t pc = entry;
-    while (pc != 0) {
+    while (pc != stop) {
+        // The static port replaces this function to observe the system-info
+        // object after the original guest body returns. Reproduce the same
+        // hook without requiring any generated C++ symbol.
+        if (!suppress_presentation_hook && pc == 0x0864107Cu) {
+            const uint32_t out = ctx.r[3];
+            const uint32_t return_address = ctx.lr;
+            run(ctx, base, pc, return_address, true);
+            title::system_info_created(ppc::ld32(base, out));
+            pc = return_address;
+            continue;
+        }
+
         if (auto it = g_imports.find(pc); it != g_imports.end() && !it->second.is_data) {
             if (!it->second.function) {
                 fatal("unimplemented dynamic import %s:%s at 0x%08X",
@@ -918,6 +932,11 @@ void execute(PPCContext& ctx, uint8_t* base, uint32_t entry) {
         }
         pc = execute_one(ctx, base, *ins);
     }
+}
+
+void execute(PPCContext& ctx, uint8_t* base, uint32_t entry) {
+    const uint32_t return_address = ctx.lr;
+    run(ctx, base, entry, return_address, false);
 }
 
 } // namespace cafe::dynamic
