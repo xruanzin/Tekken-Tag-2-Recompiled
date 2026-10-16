@@ -103,21 +103,24 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
         async_pipelines_ = *value != '\0' && *value != '0';
     }
-    // Cold cache: prioritize quick first-use creation to reduce traversal
-    // stutter. On the Windows AMD integrated driver, new fully optimized
-    // pipelines can still take hundreds of milliseconds even with a warm
-    // VkPipelineCache. Prefer fast-create there: the small steady-state cost
-    // is far less disruptive than blocking the title for 0.5-0.9 seconds.
-    bool latency_sensitive_pipeline_driver = false;
+    // VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT reduces first-use
+    // compilation latency, but on integrated AMD GPUs it can noticeably hurt
+    // steady-state frame time in effect-heavy scenes. Those GPUs are usually
+    // fill-rate limited here, so prefer fully optimized pipelines even on a
+    // cold cache and pay the one-time compilation cost instead.
+    bool amd_integrated = false;
 #ifdef _WIN32
-    latency_sensitive_pipeline_driver =
+    amd_integrated =
         ctx_.properties.vendorID == 0x1002 &&
         ctx_.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 #endif
-    fast_pipelines_ = !pipeline_cache_warm_ || latency_sensitive_pipeline_driver;
+    fast_pipelines_ = !pipeline_cache_warm_ && !amd_integrated;
     if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
         fast_pipelines_ = *value != '\0' && *value != '0';
     }
+    cafe::diagnostic_trace(fast_pipelines_
+                               ? "GPU pipeline mode=fast-create"
+                               : "GPU pipeline mode=fully-optimized");
     if (const char* value = std::getenv("TTT2_NATIVE_EFFECT_BUFFERS")) {
         native_effect_buffers_ = *value != '\0' && *value != '0';
     }
