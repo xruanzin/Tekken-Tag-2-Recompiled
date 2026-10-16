@@ -229,6 +229,15 @@ int main(int argc, char** argv) {
         diagnostic_trace(marker);
     }
 
+    if (!verify_only) {
+#ifdef _WIN32
+        // Keep the translated guest and GPU service threads ahead of launcher/
+        // desktop background work without using REALTIME priority.
+        SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+        diagnostic_trace("Windows process priority: ABOVE_NORMAL");
+#endif
+    }
+
     if (verify_only) {
         diagnostic_trace("verify: sha256 begin");
         const std::string digest = sha256_hex(*rpx);
