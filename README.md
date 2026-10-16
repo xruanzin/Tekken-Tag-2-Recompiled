@@ -8,12 +8,9 @@ Unofficial **Windows 11 port** of the original Linux static-recompilation projec
 **Original Linux port / recompiler architecture:** Petexy and upstream contributors.  
 **Windows port, launcher, host integration and Windows-focused performance work:** xruanzin.
 
-This fork keeps the original project's native Windows runtime and Vulkan GX2 implementation,
-while providing two execution paths. Developer builds can still use the original ahead-of-time
-PowerPC-to-C++ recompiler; public Windows releases use a generic zero-install host that reads the user's supported RPX at
-run time. It predecodes guest code, groups hot control flow into cached blocks and uses an
-on-demand baseline x86-64 block JIT before dispatching through the native runtime. This removes
-the end user's C++ build/toolchain step.
+This fork keeps the original project's static-recompilation architecture and native Windows/Vulkan
+runtime. Public player releases use the ahead-of-time PowerPC-to-x86-64 port built once by the
+maintainer from the supported EU v16 RPX. The player never runs cafe-recomp, CMake or Clang.
 
 > [!IMPORTANT]
 > **No game files are included.** You must provide your own legally obtained copy of
@@ -62,14 +59,14 @@ Only the European v16 executable is supported.
 | Version | 16 |
 | `code/Tekken.rpx` SHA-256 | `fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019` |
 
-The generic Windows host validates this hash at run time. The developer build script verifies
-the same hash before ahead-of-time recompilation.
+The maintainer build verifies this hash before ahead-of-time recompilation, and the packaged
+runtime verifies the player's selected game source before launch.
 
 ## Releases
 
-The Windows package follows the same user-facing model as the God of War III Windows port:
-the player downloads one complete ZIP, selects their own game files in the launcher and presses
-PLAY. No local C++ build toolchain is required.
+The player-facing package follows the same workflow as the GOW3 Windows port: download one ZIP,
+open the launcher, choose the original game and press **PLAY**. The release already contains the
+prebuilt static port runtime.
 
 A packaged installation is laid out as:
 
@@ -80,24 +77,17 @@ ttt2-windows/
 ├─ bin/
 │  └─ ttt2-runtime.exe
 ├─ user/
-└─ README-Windows.txt
+├─ out/
+├─ README-Windows.txt
+└─ BUILD-INFO.txt
 ```
 
-- **Tekken Tag Tournament 2.exe** is the main launcher and remembers the selected game source
-  and graphics/game settings.
-- **Play Tekken Tag Tournament 2.exe** starts directly with the saved settings, suitable for a
-  desktop shortcut or a non-Steam shortcut.
-- **bin/ttt2-runtime.exe** is the prebuilt generic Windows runtime. It contains no Tekken game
-  files and does not require `cafe-recomp`, CMake or Clang on the player's PC.
-- **user/** holds saves, caches and `last_run.log`.
+`bin/ttt2-runtime.exe` is produced from the ahead-of-time recompiler by the maintainer before
+the release is published. End users do not need the compiler toolchain.
 
-The supported game remains the legally obtained European v16 build. The launcher can point at
-the extracted `code/content/meta` layout or a supported `.wua`.
-
-Unlike the PS4 God of War III executable, Wii U TTT2 contains PowerPC code rather than x86-64
-code. Therefore the generic runtime must translate PowerPC code to the Windows host internally;
-the public package cannot simply execute the original RPX instructions directly on an x86-64
-CPU.
+GitHub CI deliberately does **not** publish the experimental generic/JIT runtime as a player
+release. Production player packages are created with `release-windows.ps1`, which refuses to
+package a runtime unless it identifies itself as a static AOT build.
 
 ## First run
 
@@ -145,6 +135,19 @@ TTT2 Launcher.exe
 
 More Windows-specific details are in [docs/WINDOWS.md](docs/WINDOWS.md).
 
+## Maintainer release build
+
+The release owner can build and publish the complete player package with one command after
+checking out `windows-host`:
+
+```powershell
+.\release-windows.ps1 -Game "D:\Path\To\TTT2-EU-v16" -Version v0.4.0-static-preview -Publish
+```
+
+The script verifies the EU v16 `Tekken.rpx`, builds the static AOT runtime, rejects the
+experimental dynamic host, assembles the GOW3-style folder layout, creates SHA-256 checksums and
+can upload the ZIP plus executables to GitHub Releases.
+
 ## Launcher
 
 The Windows launcher provides:
@@ -166,10 +169,9 @@ Launcher artwork and launcher-specific code live together under
 
 ## Performance and caches
 
-The Windows fork keeps reusable shader, Vulkan pipeline, detiled-texture and dynamic code-block
-caches. The generic host starts immediately without a local C++ build; blocks reached at run
-time are remembered and warmed on later launches. The first run through a stage or character
-combination can still be less smooth while new graphics work is being compiled. Repeated
+The Windows fork keeps reusable shader, Vulkan pipeline and detiled-texture caches. The static
+player runtime starts without any local game recompilation. The first run through a stage or
+character combination can still be less smooth while new graphics work is compiled; repeated
 content should reuse more cached data.
 
 For performance reports, include the runtime log and describe the exact match, stage and action
