@@ -546,6 +546,7 @@ void retire(uint64_t timestamp) {
 
 void command_processor_main() {
     host::set_thread_name("gpu");
+    host::set_thread_high_priority();
     for (;;) {
         Submission s;
         {
