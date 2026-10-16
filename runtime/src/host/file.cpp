@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstring>
+#include <deque>
 #include <unordered_map>
 
 namespace cafe::host {
@@ -23,13 +24,11 @@ std::shared_ptr<RandomAccessFile> RandomAccessFile::open(const fs::path& path,
 
     const bool read_only = options.read && !options.write && !options.create && !options.truncate;
     static std::mutex pool_mutex;
-    static std::unordered_map<fs::path, std::weak_ptr<RandomAccessFile>> read_pool;
+    static std::unordered_map<fs::path, std::shared_ptr<RandomAccessFile>> read_pool;
+    static std::deque<fs::path> pool_order;
     if (read_only) {
         std::lock_guard lock(pool_mutex);
-        if (auto it = read_pool.find(path); it != read_pool.end()) {
-            if (auto existing = it->second.lock()) return existing;
-            read_pool.erase(it);
-        }
+        if (auto it = read_pool.find(path); it != read_pool.end()) return it->second;
     }
 
     std::ios::openmode mode = std::ios::binary;
@@ -49,6 +48,13 @@ std::shared_ptr<RandomAccessFile> RandomAccessFile::open(const fs::path& path,
     if (read_only) {
         std::lock_guard lock(pool_mutex);
         read_pool[path] = result;
+        pool_order.push_back(path);
+        constexpr size_t kMaxPooledFiles = 16;
+        while (pool_order.size() > kMaxPooledFiles) {
+            const fs::path oldest = std::move(pool_order.front());
+            pool_order.pop_front();
+            if (oldest != path) read_pool.erase(oldest);
+        }
     }
     return result;
 }
