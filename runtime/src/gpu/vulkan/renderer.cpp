@@ -601,16 +601,40 @@ void Renderer::swap() {
     }
     if (t - window_start_ >= 10.0) {
         save_pipeline_cache();
+
+        const double frame_count = static_cast<double>(std::max<uint64_t>(frames_, 1));
+        const double fps = frames_ / (t - window_start_);
+        const double draws_per_frame = double(draws_) / frame_count;
+        const double skipped_per_frame = double(skipped_draws_) / frame_count;
+        const double waits_per_frame = double(waits_) / frame_count;
+        const double wait_ms = wait_seconds_ * 1000.0 / frame_count;
+        const double busy_ms = busy_seconds_ * 1000.0 / frame_count;
+        const double replay_ms = replay_seconds_ * 1000.0 / frame_count;
+        const double match_ms = match_seconds_ * 1000.0 / frame_count;
+
+        // last_run.log can be unavailable on GUI-subsystem Windows launches.
+        // Mirror the useful performance counters into the raw boot trace,
+        // whose Win32 writer is independent of stdio.
+        char perf[768]{};
+        std::snprintf(
+            perf, sizeof(perf),
+            "PERF fps=%.1f draws/frame=%.0f skipped/frame=%.0f gpu_waits/frame=%.1f "
+            "gpu_wait_ms/frame=%.2f gpu_busy_ms/frame=%.2f targets=%zu textures=%zu "
+            "shaders=%zu pipelines=%zu replay_ms/frame=%.2f match_ms/frame=%.2f",
+            fps, draws_per_frame, skipped_per_frame, waits_per_frame, wait_ms, busy_ms,
+            targets_.size(), textures_.size(), shaders_.size(), pipelines_.size(),
+            replay_ms, match_ms);
+        cafe::diagnostic_trace(perf);
+
         std::fprintf(stderr, "ttt2: gpu: %.1f frames/s, %.0f draws per frame (%.0f skipped), %zu targets, %zu textures, "
                              "%zu shaders, %zu pipelines; %.1f GPU waits, %.1f ms waiting (%.1f ms GPU busy) per frame; %llu/%llu extra frames blended (%llu skipped: GPU behind), %.1f MB recorded; replay %.1f ms (matching %.1f)\n",
-                     frames_ / (t - window_start_), double(draws_) / std::max<uint64_t>(frames_, 1),
-                     double(skipped_draws_) / std::max<uint64_t>(frames_, 1), targets_.size(), textures_.size(),
-                     shaders_.size(), pipelines_.size(), double(waits_) / std::max<uint64_t>(frames_, 1),
-                     wait_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1), busy_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1),
+                     fps, draws_per_frame, skipped_per_frame, targets_.size(), textures_.size(),
+                     shaders_.size(), pipelines_.size(), waits_per_frame,
+                     wait_ms, busy_ms,
                      static_cast<unsigned long long>(blended_replays_),
                      static_cast<unsigned long long>(replays_), static_cast<unsigned long long>(skipped_replays_),
                      frame_records_[current_record_ ^ 1].used / 1e6,
-                     replay_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1), match_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1));
+                     replay_ms, match_ms);
         if (!swap_delays_.empty()) {
             std::sort(swap_delays_.begin(), swap_delays_.end());
             const auto pct = [&](size_t p) { return swap_delays_[std::min(swap_delays_.size() - 1, swap_delays_.size() * p / 100)]; };
