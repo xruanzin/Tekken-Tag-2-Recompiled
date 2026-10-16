@@ -61,6 +61,19 @@ Only the European v16 executable is supported.
 
 The build script verifies this hash before recompiling the game.
 
+## Releases
+
+The [GitHub Releases](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/releases) page provides a
+**ready-to-run Windows launcher** so users do not need to compile the launcher themselves.
+
+Release downloads intentionally do **not** include `ttt2.exe`, `Tekken.rpx`, generated game
+code or game assets. The game executable must be built locally from the user's own legally
+obtained European v16 copy.
+
+The standalone `TTT2 Launcher.exe` release asset has its launcher artwork embedded directly in
+the executable. A ZIP package is also provided with the launcher, Windows documentation and
+license.
+
 ## Quick start on Windows
 
 ### Requirements
