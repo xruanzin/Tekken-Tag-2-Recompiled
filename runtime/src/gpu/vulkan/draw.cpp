@@ -305,20 +305,10 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     const uint64_t key = fnv(keys, sizeof(keys));
     auto& entry = shaders_[key];
     if (entry) {
-        uint8_t state = entry->state.load(std::memory_order_acquire);
-        if (state == 1) {
-            const double wait_begin = compile_now_ms();
-            std::unique_lock lock(shader_compile_mutex_);
-            shader_compile_cv_.wait(lock, [&] {
-                return entry->state.load(std::memory_order_acquire) != 1;
-            });
-            state = entry->state.load(std::memory_order_acquire);
-            const double wait_ms = compile_now_ms() - wait_begin;
-            if (wait_ms >= 2.0 || trace_shader_cache()) {
-                std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required shader\n", wait_ms);
-            }
-        }
-        return entry->failed || state == 3 ? nullptr : entry.get();
+        const uint8_t state = entry->state.load(std::memory_order_acquire);
+        if (state == 3) return nullptr;
+        if (state == 1) shader_pending_ = true;
+        return entry.get();
     }
     entry = std::make_unique<ShaderModule>();
     const char* kind = stage == Stage::kVertex ? "vs" : "ps";
@@ -338,7 +328,10 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     }
     // SPIR-V is cached on disk by the GLSL it came from.
     const uint64_t glsl_source_hash = fnv(entry->info.glsl.data(), entry->info.glsl.size());
-    const bool optimize_spirv = performance_spirv(ctx_);
+    // First-use shader latency is more visible than shaderc's extra offline
+    // optimization. Vulkan pipeline creation remains fully optimized, so keep
+    // shaderc itself in fast mode and let the driver optimize native ISA.
+    const bool optimize_spirv = false;
     const uint64_t glsl_hash = spirv_cache_key(glsl_source_hash, optimize_spirv);
     std::vector<uint32_t> spirv = load_cached_spirv(glsl_hash);
     if (spirv.empty() && async_shaders_) {
@@ -348,18 +341,9 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
             shader_compile_queue_.push_back(
                 {entry.get(), stage, program_hash, glsl_hash, entry->info.glsl});
         }
+        shader_pending_ = true;
         shader_compile_cv_.notify_one();
-        const double wait_begin = compile_now_ms();
-        std::unique_lock lock(shader_compile_mutex_);
-        shader_compile_cv_.wait(lock, [&] {
-            return entry->state.load(std::memory_order_acquire) != 1;
-        });
-        const double wait_ms = compile_now_ms() - wait_begin;
-        if (wait_ms >= 2.0 || trace_shader_cache()) {
-            std::fprintf(stderr, "ttt2: gpu: required shader became ready after %.2f ms\n", wait_ms);
-        }
-        const uint8_t state = entry->state.load(std::memory_order_acquire);
-        return state == 2 && !entry->failed ? entry.get() : nullptr;
+        return entry.get();
     }
     if (spirv.empty()) {
         const double compile_begin = compile_now_ms();
@@ -406,9 +390,10 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
 
 void Renderer::shader_worker_main() {
     host::set_thread_name("shader-compile");
-    host::set_thread_low_priority();
+    // Required draws wait for these workers. Keep normal host priority instead
+    // of throttling foreground shader compilation behind guest threads.
     if (performance_spirv(ctx_)) {
-        cafe::diagnostic_trace("GPU SPIR-V optimization=performance");
+        cafe::diagnostic_trace("GPU SPIR-V mode=fast-compile; Vulkan pipelines=optimized");
     }
     shaderc_compiler_t compiler = shaderc_compiler_initialize();
     for (;;) {
@@ -425,9 +410,7 @@ void Renderer::shader_worker_main() {
         const double begin = compile_now_ms();
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
-        shaderc_compile_options_set_optimization_level(
-            options, performance_spirv(ctx_) ? shaderc_optimization_level_performance
-                                             : shaderc_optimization_level_zero);
+        shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_zero);
         shaderc_compilation_result_t result = shaderc_compile_into_spv(
             compiler, task.glsl.data(), task.glsl.size(),
             task.stage == Stage::kVertex ? shaderc_vertex_shader : shaderc_fragment_shader,
@@ -475,7 +458,8 @@ void Renderer::shader_worker_main() {
 
 void Renderer::pipeline_worker_main() {
     host::set_thread_name("pipeline-compile");
-    host::set_thread_low_priority();
+    // Pipeline creation is often on the critical path of a required draw.
+    // Default priority avoids artificially extending first-use stalls.
     for (;;) {
         PipelineCompileTask task;
         {
@@ -924,6 +908,26 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     };
     if (!bind_textures(vs, resource::kVsTexture, sampler::kVs, reg::TD_VS_SAMPLER_BORDER0_RED, vs_textures) ||
         !bind_textures(ps, resource::kPsTexture, sampler::kPs, reg::TD_PS_SAMPLER_BORDER0_RED, ps_textures)) {
+        ++skipped_draws_;
+        return;
+    }
+
+    const auto wait_shader_ready = [&](const ShaderModule* shader, const char* kind) {
+        if (shader->state.load(std::memory_order_acquire) == 1) {
+            const double wait_begin = compile_now_ms();
+            std::unique_lock lock(shader_compile_mutex_);
+            shader_compile_cv_.wait(lock, [&] {
+                return shader->state.load(std::memory_order_acquire) != 1;
+            });
+            const double wait_ms = compile_now_ms() - wait_begin;
+            if (wait_ms >= 2.0 || trace_shader_cache()) {
+                std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required %s shader\n", wait_ms, kind);
+            }
+        }
+        return shader->state.load(std::memory_order_acquire) == 2 && !shader->failed;
+    };
+    if (!wait_shader_ready(vs, "vertex") || !wait_shader_ready(ps, "pixel")) {
+        report_once("draw skipped: required shader compilation failed", 0);
         ++skipped_draws_;
         return;
     }
