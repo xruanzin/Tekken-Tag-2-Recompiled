@@ -237,8 +237,29 @@ $CommonArgs = @(
     "-DVCPKG_TARGET_TRIPLET=x64-windows-static"
 )
 if ($WindowsResource) {
-    $CommonArgs += "-DTTT2_WINDOWS_RESOURCE=$WindowsResource"
-    $CommonArgs += "-DCMAKE_RC_COMPILER=$LlvmRcExe"
+    # CMake writes CMAKE_RC_COMPILER into a generated .cmake file. Native
+    # Windows backslashes there are parsed as CMake escapes (e.g. "\P"),
+    # so always give CMake a forward-slash path.
+    $LlvmRcForCMake = $LlvmRcExe.Replace("\\", "/")
+    $WindowsResourceForCMake = $WindowsResource.Replace("\\", "/")
+    $CommonArgs += "-DTTT2_WINDOWS_RESOURCE=$WindowsResourceForCMake"
+    $CommonArgs += "-DCMAKE_RC_COMPILER=$LlvmRcForCMake"
+
+    # Recover automatically from an older configure that cached an unescaped
+    # llvm-rc path. Remove only the RC compiler metadata, never the compiled
+    # game objects.
+    if (Test-Path -LiteralPath $BuildPath) {
+        Get-ChildItem -LiteralPath (Join-Path $BuildPath "CMakeFiles") -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $BadRcCache = Join-Path $_.FullName "CMakeRCCompiler.cmake"
+                if (Test-Path -LiteralPath $BadRcCache) {
+                    $RcText = Get-Content -LiteralPath $BadRcCache -Raw -ErrorAction SilentlyContinue
+                    if ($RcText -match 'C:\\\\Program Files\\\\LLVM') {
+                        Remove-Item -LiteralPath $BadRcCache -Force
+                    }
+                }
+            }
+    }
 }
 
 Write-Host "==> Configuring Windows host tools"
