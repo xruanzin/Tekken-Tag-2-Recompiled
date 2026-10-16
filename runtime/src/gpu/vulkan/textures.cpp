@@ -15,6 +15,7 @@
 #include "gx2/internal.h"
 
 #include "cafe/runtime.h"
+#include "host/platform.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <mutex>
+#include <thread>
 #include <set>
 #include <string>
 
@@ -51,6 +59,138 @@ uint64_t hash_bytes(const uint8_t* data, size_t size) {
     for (; i < size; ++i) h = (h ^ data[i]) * 0x100000001B3ull;
     return h;
 }
+
+constexpr uint32_t kTextureCacheMagic = 0x32585454u; // "TTX2"
+constexpr uint32_t kTextureCacheVersion = 1;
+constexpr uint64_t kMaxCachedTextureBytes = 64ull << 20;
+constexpr uint64_t kMaxQueuedTextureCacheBytes = 192ull << 20;
+
+struct TextureCacheHeader {
+    uint32_t magic = kTextureCacheMagic;
+    uint32_t version = kTextureCacheVersion;
+    uint64_t key = 0;
+    uint64_t payload_size = 0;
+};
+
+bool texture_cache_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TTT2_TEXTURE_CACHE");
+        return value == nullptr || *value == '\0' || *value != '0';
+    }();
+    return enabled;
+}
+
+std::filesystem::path texture_cache_directory() {
+    static const std::filesystem::path dir = [] {
+        if (!texture_cache_enabled()) return std::filesystem::path();
+        std::filesystem::path d = host::cache_directory() / "ttt2" / "textures";
+        std::error_code ec;
+        std::filesystem::create_directories(d, ec);
+        return ec ? std::filesystem::path() : d;
+    }();
+    return dir;
+}
+
+std::filesystem::path texture_cache_path(uint64_t key) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "%016llx.bin", static_cast<unsigned long long>(key));
+    return texture_cache_directory() / name;
+}
+
+bool load_texture_cache(uint64_t key, size_t expected, std::vector<uint8_t>& payload) {
+    if (texture_cache_directory().empty() || expected == 0 || expected > kMaxCachedTextureBytes) return false;
+    std::ifstream in(texture_cache_path(key), std::ios::binary | std::ios::ate);
+    if (!in) return false;
+    const auto size = in.tellg();
+    if (size != static_cast<std::streamoff>(sizeof(TextureCacheHeader) + expected)) return false;
+    in.seekg(0);
+    TextureCacheHeader header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!in || header.magic != kTextureCacheMagic || header.version != kTextureCacheVersion ||
+        header.key != key || header.payload_size != expected) {
+        return false;
+    }
+    payload.resize(expected);
+    in.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(expected));
+    return static_cast<bool>(in);
+}
+
+class TextureCacheWriter {
+public:
+    TextureCacheWriter() : thread_([this] { run(); }) {}
+    ~TextureCacheWriter() {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void enqueue(uint64_t key, std::vector<uint8_t>&& payload) {
+        if (texture_cache_directory().empty() || payload.empty() || payload.size() > kMaxCachedTextureBytes) return;
+        std::lock_guard lock(mutex_);
+        if (queued_bytes_ + payload.size() > kMaxQueuedTextureCacheBytes) return;
+        queued_bytes_ += payload.size();
+        queue_.push_back({key, std::move(payload)});
+        cv_.notify_one();
+    }
+
+private:
+    struct Item {
+        uint64_t key;
+        std::vector<uint8_t> payload;
+    };
+
+    void run() {
+        host::set_thread_name("texture-cache");
+        for (;;) {
+            Item item{};
+            {
+                std::unique_lock lock(mutex_);
+                cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
+                if (stop_ && queue_.empty()) return;
+                item = std::move(queue_.front());
+                queued_bytes_ -= item.payload.size();
+                queue_.pop_front();
+            }
+            const std::filesystem::path path = texture_cache_path(item.key);
+            const std::filesystem::path temporary = path.string() + ".tmp";
+            TextureCacheHeader header{};
+            header.key = item.key;
+            header.payload_size = item.payload.size();
+            {
+                std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+                out.write(reinterpret_cast<const char*>(item.payload.data()),
+                          static_cast<std::streamsize>(item.payload.size()));
+                if (!out) {
+                    std::error_code ec;
+                    std::filesystem::remove(temporary, ec);
+                    continue;
+                }
+            }
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            ec.clear();
+            std::filesystem::rename(temporary, path, ec);
+            if (ec) std::filesystem::remove(temporary, ec);
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<Item> queue_;
+    uint64_t queued_bytes_ = 0;
+    bool stop_ = false;
+    std::thread thread_;
+};
+
+TextureCacheWriter& texture_cache_writer() {
+    static TextureCacheWriter writer;
+    return writer;
+}
+
 
 VkImageViewType view_type_of(uint32_t dim) {
     switch (dim) {
@@ -90,6 +230,16 @@ Resource decode(const uint32_t* w) {
     if (r.dim == gx2::kDim1D || r.dim == gx2::kDim2D || r.dim == gx2::kDim2DMsaa) r.depth = 1;
     if (r.dim == gx2::kDim2DMsaa || r.dim == gx2::kDim2DMsaaArray) r.last_level = 0; // LAST_LEVEL holds the samples
     return r;
+}
+
+uint64_t texture_cache_key(uint64_t contents, const Resource& r, const gx2::Surface& surface, bool filtered) {
+    uint32_t words[] = {
+        static_cast<uint32_t>(contents), static_cast<uint32_t>(contents >> 32),
+        r.format, r.width, r.height, r.depth, r.dim, r.tile_mode,
+        static_cast<uint32_t>(surface.mip_levels), static_cast<uint32_t>(surface.image),
+        filtered ? 1u : 0u,
+    };
+    return hash_words(words, std::size(words));
 }
 
 // The GX2 surface a resource describes, laid out as GX2 laid it out.
@@ -473,44 +623,105 @@ void Renderer::load_texture(Texture& t) {
         return;
     }
     const gpu::PlaneFilter& plane_filter = gpu::plane_filter();
+
+    struct PreparedLevel {
+        uint32_t width = 0, height = 0, ew = 0, eh = 0, slices = 0;
+        size_t bytes = 0;
+        std::vector<uint8_t> data;
+    };
+    std::vector<PreparedLevel> linear(s.mip_levels);
+    size_t total_linear_bytes = 0;
     for (uint32_t level = 0; level < s.mip_levels; ++level) {
-        const uint32_t width = std::max(1u, r.width >> level), height = std::max(1u, r.height >> level);
-        const uint32_t ew = (width + block - 1) / block, eh = (height + block - 1) / block;
-        const uint32_t slices = r.dim == gx2::kDim3D ? std::max(1u, r.depth >> level) : r.depth;
-        const VkDeviceSize bytes = VkDeviceSize{ew} * eh * slices * f.bytes;
+        PreparedLevel& p = linear[level];
+        p.width = std::max(1u, r.width >> level);
+        p.height = std::max(1u, r.height >> level);
+        p.ew = (p.width + block - 1) / block;
+        p.eh = (p.height + block - 1) / block;
+        p.slices = r.dim == gx2::kDim3D ? std::max(1u, r.depth >> level) : r.depth;
+        p.bytes = size_t{p.ew} * p.eh * p.slices * f.bytes;
+        total_linear_bytes += p.bytes;
+    }
+
+    const bool filtered_level0 = hw == fmt::k8 && !linear.empty() && linear[0].slices == 1 && plane_filter;
+    const uint64_t cache_key = texture_cache_key(h, r, s, filtered_level0);
+    std::vector<uint8_t> cached_linear;
+    const bool cache_eligible = total_linear_bytes != 0 && total_linear_bytes <= kMaxCachedTextureBytes &&
+                                t.replacement < 0;
+    const bool cache_hit = cache_eligible && load_texture_cache(cache_key, total_linear_bytes, cached_linear);
+
+    if (!cache_hit) {
+        // Large mip levels are independent CPU detile jobs. Prepare several
+        // at once, then issue Vulkan uploads in the original order.
+        std::vector<std::future<void>> futures;
+        futures.reserve(std::min<size_t>(linear.size(), 4));
+        const auto prepare = [&](uint32_t level) {
+            PreparedLevel& p = linear[level];
+            p.data.resize(p.bytes);
+            if (level == 0 && !prepared_level0.empty() && prepared_level0.size() == p.bytes) {
+                std::memcpy(p.data.data(), prepared_level0.data(), p.bytes);
+            } else {
+                detile(tiled_level(level), p.ew, p.eh, 0, p.slices, p.data.data());
+            }
+            if (hw == fmt::k8_24) {
+                auto* v = reinterpret_cast<uint32_t*>(p.data.data());
+                for (size_t i = 0; i < p.bytes / 4; ++i) {
+                    const float depth = static_cast<float>(v[i] & 0xFFFFFF) / 16777215.0f;
+                    std::memcpy(&v[i], &depth, 4);
+                }
+            }
+        };
+
+        constexpr size_t kParallelMipThreshold = 256u << 10;
+        uint32_t async_jobs = 0;
+        const uint32_t max_async_jobs = std::max(1u, std::min(4u, std::thread::hardware_concurrency()));
+        for (uint32_t level = 0; level < s.mip_levels; ++level) {
+            if (linear[level].bytes >= kParallelMipThreshold && async_jobs < max_async_jobs) {
+                futures.push_back(std::async(std::launch::async, [&, level] { prepare(level); }));
+                ++async_jobs;
+            } else {
+                prepare(level);
+            }
+        }
+        for (auto& future : futures) future.get();
+
+        if (filtered_level0 && !linear[0].data.empty()) {
+            plane_filter(uint32_t{s.image}, linear[0].ew, linear[0].eh, linear[0].data.data());
+        }
+    }
+
+    end_rendering_and_barrier();
+    size_t linear_offset = 0;
+    for (uint32_t level = 0; level < s.mip_levels; ++level) {
+        PreparedLevel& p = linear[level];
         VkDeviceSize offset = 0;
-        uint8_t* staging = upload(bytes, 16, offset);
-        if (level == 0 && !prepared_level0.empty() && prepared_level0.size() == bytes) {
-            // Replacement matching / tracing already detiled level 0.
-            if (hw == fmt::k8 && slices == 1 && plane_filter) {
-                plane_filter(uint32_t{s.image}, ew, eh, prepared_level0.data());
-            }
-            std::memcpy(staging, prepared_level0.data(), prepared_level0.size());
-        } else if (level == 0 && hw == fmt::k8 && slices == 1 && plane_filter) {
-            // (Staging memory is slow to read back.)
-            std::vector<uint8_t> plane(bytes);
-            detile(tiled_level(level), ew, eh, 0, slices, plane.data());
-            plane_filter(uint32_t{s.image}, ew, eh, plane.data());
-            std::memcpy(staging, plane.data(), plane.size());
-        } else {
-            detile(tiled_level(level), ew, eh, 0, slices, staging);
-        }
-        if (hw == fmt::k8_24) { // 24-bit unorm depth in the low bits, as a float
-            auto* v = reinterpret_cast<uint32_t*>(staging);
-            for (VkDeviceSize i = 0; i < bytes / 4; ++i) {
-                const float d = static_cast<float>(v[i] & 0xFFFFFF) / 16777215.0f;
-                std::memcpy(&v[i], &d, 4);
-            }
-        }
+        uint8_t* staging = upload(p.bytes, 16, offset);
+        const uint8_t* source = cache_hit ? cached_linear.data() + linear_offset : p.data.data();
+        std::memcpy(staging, source, p.bytes);
+
         VkBufferImageCopy region{};
         region.bufferOffset = offset;
-        region.bufferRowLength = ew * block;
-        region.bufferImageHeight = eh * block;
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, r.dim == gx2::kDim3D ? 1 : slices};
-        region.imageExtent = {width, height, r.dim == gx2::kDim3D ? slices : 1};
+        region.bufferRowLength = p.ew * block;
+        region.bufferImageHeight = p.eh * block;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, r.dim == gx2::kDim3D ? 1 : p.slices};
+        region.imageExtent = {p.width, p.height, r.dim == gx2::kDim3D ? p.slices : 1};
         vkCmdCopyBufferToImage(cmd(), ring_.buffer(), t.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        linear_offset += p.bytes;
     }
     barrier();
+
+    if (cache_eligible && !cache_hit) {
+        std::vector<uint8_t> payload(total_linear_bytes);
+        size_t cursor = 0;
+        for (const PreparedLevel& p : linear) {
+            std::memcpy(payload.data() + cursor, p.data.data(), p.bytes);
+            cursor += p.bytes;
+        }
+        texture_cache_writer().enqueue(cache_key, std::move(payload));
+    }
+    if (cache_hit && std::getenv("TTT2_TRACE_TEXTURE_LOADS")) {
+        std::fprintf(stderr, "ttt2: gpu: texture cache HIT 0x%08X %ux%u levels %u (%zu bytes)\n",
+                     uint32_t{s.image}, r.width, r.height, uint32_t{s.mip_levels}, total_linear_bytes);
+    }
     profile_mark("texture upload", uint32_t{s.image}, r.width, r.height);
     report_texture_prepare("upload");
     // TTT2_DUMP_TEXTURES=<directory>: every texture loaded from memory, as PNG.
