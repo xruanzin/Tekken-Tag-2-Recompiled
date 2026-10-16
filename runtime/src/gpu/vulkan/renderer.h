@@ -506,7 +506,9 @@ private:
 
     // Statistics, printed every ten seconds.
     uint64_t frames_ = 0, draws_ = 0, skipped_draws_ = 0, waits_ = 0;
+    uint64_t shader_waits_ = 0, pipeline_waits_ = 0;
     double wait_seconds_ = 0, busy_seconds_ = 0;
+    double shader_wait_seconds_ = 0, pipeline_wait_seconds_ = 0;
     VkQueryPool busy_pool_ = VK_NULL_HANDLE; // two timestamps per slot
     double window_start_ = 0;
 };
