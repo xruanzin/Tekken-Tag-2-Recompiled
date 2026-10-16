@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // How the title presents buttons and its logo on a computer:
 // - Menus confirm with the bottom face button and go back with the right
 //   one, as on the other consoles (Nintendo controllers keep the Wii U's
