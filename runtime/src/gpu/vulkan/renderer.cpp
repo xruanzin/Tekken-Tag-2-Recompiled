@@ -694,6 +694,10 @@ void Renderer::swap() {
         const double busy_ms = busy_seconds_ * 1000.0 / frame_count;
         const double replay_ms = replay_seconds_ * 1000.0 / frame_count;
         const double match_ms = match_seconds_ * 1000.0 / frame_count;
+        const double shader_wait_ms = shader_wait_seconds_ * 1000.0 / frame_count;
+        const double pipeline_wait_ms = pipeline_wait_seconds_ * 1000.0 / frame_count;
+        const double shader_waits_per_frame = double(shader_waits_) / frame_count;
+        const double pipeline_waits_per_frame = double(pipeline_waits_) / frame_count;
 
         // last_run.log can be unavailable on GUI-subsystem Windows launches.
         // Mirror the useful performance counters into the raw boot trace,
@@ -702,9 +706,11 @@ void Renderer::swap() {
         std::snprintf(
             perf, sizeof(perf),
             "PERF fps=%.1f draws/frame=%.0f skipped/frame=%.0f gpu_waits/frame=%.1f "
-            "gpu_wait_ms/frame=%.2f gpu_busy_ms/frame=%.2f targets=%zu textures=%zu "
-            "shaders=%zu pipelines=%zu replay_ms/frame=%.2f match_ms/frame=%.2f",
+            "gpu_wait_ms/frame=%.2f gpu_busy_ms/frame=%.2f shader_waits/frame=%.2f "
+            "shader_wait_ms/frame=%.2f pipeline_waits/frame=%.2f pipeline_wait_ms/frame=%.2f "
+            "targets=%zu textures=%zu shaders=%zu pipelines=%zu replay_ms/frame=%.2f match_ms/frame=%.2f",
             fps, draws_per_frame, skipped_per_frame, waits_per_frame, wait_ms, busy_ms,
+            shader_waits_per_frame, shader_wait_ms, pipeline_waits_per_frame, pipeline_wait_ms,
             targets_.size(), textures_.size(), shaders_.size(), pipelines_.size(),
             replay_ms, match_ms);
         cafe::diagnostic_trace(perf);
@@ -732,7 +738,9 @@ void Renderer::swap() {
         replays_ = blended_replays_ = skipped_replays_ = 0;
         window_start_ = t;
         frames_ = draws_ = skipped_draws_ = waits_ = 0;
+        shader_waits_ = pipeline_waits_ = 0;
         wait_seconds_ = busy_seconds_ = 0;
+        shader_wait_seconds_ = pipeline_wait_seconds_ = 0;
     }
 }
 
