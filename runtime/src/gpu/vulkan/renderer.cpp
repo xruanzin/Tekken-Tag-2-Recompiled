@@ -34,6 +34,15 @@ constexpr VkDeviceSize kRingSize = 256ull << 20;
 
 Renderer::Renderer() {
     ctx_.init(host::vulkan_instance_extensions());
+    {
+        char gpu_info[512]{};
+        std::snprintf(gpu_info, sizeof(gpu_info),
+                      "GPU device=%s vendor=0x%04X type=%u driver=0x%08X",
+                      ctx_.properties.deviceName, ctx_.properties.vendorID,
+                      static_cast<unsigned>(ctx_.properties.deviceType),
+                      ctx_.properties.driverVersion);
+        cafe::diagnostic_trace(gpu_info);
+    }
     init_formats(ctx_.physical);
     guest_.init(ctx_);
     ring_.init(ctx_, kRingSize);
@@ -72,6 +81,13 @@ Renderer::Renderer() {
         scale_ = std::clamp((dh + 719) / 720, 1u, 4u);
     }
     std::fprintf(stderr, "ttt2: GPU: rendering at %ux%u (scale %u)\n", 1280 * scale_, 720 * scale_, scale_);
+    {
+        char render_info[192]{};
+        std::snprintf(render_info, sizeof(render_info),
+                      "GPU render_size=%ux%u scale=%u",
+                      1280 * scale_, 720 * scale_, scale_);
+        cafe::diagnostic_trace(render_info);
+    }
     compiler_ = shaderc_compiler_initialize();
     if (const char* value = std::getenv("TTT2_ASYNC_SHADERS")) {
         async_shaders_ = *value != '\0' && *value != '0';
