@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,33 @@ uint64_t fnv(const void* data, size_t size, uint64_t h = 0xCBF29CE484222325ull) 
     const auto* p = static_cast<const uint8_t*>(data);
     for (size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 0x100000001B3ull;
     return h;
+}
+
+double compile_now_ms() {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// std::filesystem::rename() does not replace an existing destination on
+// Windows. Pipeline cache updates used to stop persisting after the first
+// successful save. Cache files are expendable, so remove the destination
+// before the final rename.
+bool replace_cache_file(const std::filesystem::path& temporary,
+                        const std::filesystem::path& destination) {
+    std::error_code ec;
+    std::filesystem::remove(destination, ec);
+    ec.clear();
+    std::filesystem::rename(temporary, destination, ec);
+    if (ec) {
+        std::filesystem::remove(temporary, ec);
+        return false;
+    }
+    return true;
+}
+
+bool trace_shader_cache() {
+    static const bool enabled = std::getenv("TTT2_TRACE_SHADER_CACHE") != nullptr;
+    return enabled;
 }
 
 void report_once(const char* what, uint32_t value) {
@@ -140,10 +168,16 @@ void store_cached_spirv(uint64_t key, const std::vector<uint32_t>& code) {
     char name[32];
     std::snprintf(name, sizeof(name), "%016llx.spv", static_cast<unsigned long long>(key));
     const std::filesystem::path path = cache_directory() / "spirv" / name;
-    std::ofstream(path.string() + ".tmp", std::ios::binary)
-        .write(reinterpret_cast<const char*>(code.data()), static_cast<std::streamsize>(code.size() * 4));
-    std::error_code ec;
-    std::filesystem::rename(path.string() + ".tmp", path, ec);
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(code.data()), static_cast<std::streamsize>(code.size() * 4));
+        if (!out) return;
+    }
+    if (!replace_cache_file(temporary, path)) {
+        std::fprintf(stderr, "ttt2: gpu: could not update SPIR-V cache %s\n",
+                     host::path_string(path).c_str());
+    }
 }
 
 const char* dump_directory() {
@@ -175,6 +209,11 @@ void Renderer::load_pipeline_cache() {
         pci.initialDataSize = 0; // stale or from another driver
         pci.pInitialData = nullptr;
         VK_CHECK(vkCreatePipelineCache(ctx_.device, &pci, nullptr, &pipeline_cache_));
+        data.clear();
+    }
+    if (!data.empty()) {
+        std::fprintf(stderr, "ttt2: gpu: loaded %.2f MB Vulkan pipeline cache\n",
+                     data.size() / (1024.0 * 1024.0));
     }
 }
 
@@ -186,9 +225,19 @@ void Renderer::save_pipeline_cache() {
     std::vector<char> data(size);
     if (vkGetPipelineCacheData(ctx_.device, pipeline_cache_, &size, data.data()) != VK_SUCCESS) return;
     const std::filesystem::path path = cache_directory() / "pipelines.bin";
-    std::ofstream(path.string() + ".tmp", std::ios::binary).write(data.data(), static_cast<std::streamsize>(size));
-    std::error_code ec;
-    std::filesystem::rename(path.string() + ".tmp", path, ec);
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out.write(data.data(), static_cast<std::streamsize>(size));
+        if (!out) return;
+    }
+    if (!replace_cache_file(temporary, path)) {
+        std::fprintf(stderr, "ttt2: gpu: could not update Vulkan pipeline cache %s\n",
+                     host::path_string(path).c_str());
+    } else if (trace_shader_cache()) {
+        std::fprintf(stderr, "ttt2: gpu: saved %.2f MB Vulkan pipeline cache\n",
+                     size / (1024.0 * 1024.0));
+    }
 }
 
 // ---------------------------------------------------------------- shaders
@@ -248,6 +297,7 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     const uint64_t glsl_hash = fnv(entry->info.glsl.data(), entry->info.glsl.size());
     std::vector<uint32_t> spirv = load_cached_spirv(glsl_hash);
     if (spirv.empty()) {
+        const double compile_begin = compile_now_ms();
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
         // The driver optimises; SPIR-V optimisation only costs compile time.
@@ -256,6 +306,11 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
             compiler_, entry->info.glsl.data(), entry->info.glsl.size(),
             stage == Stage::kVertex ? shaderc_vertex_shader : shaderc_fragment_shader, kind, "main", options);
         shaderc_compile_options_release(options);
+        const double compile_ms = compile_now_ms() - compile_begin;
+        if (compile_ms >= 2.0 || trace_shader_cache()) {
+            std::fprintf(stderr, "ttt2: gpu: shader cache MISS %s %016llx: shaderc %.2f ms\n",
+                         kind, static_cast<unsigned long long>(program_hash), compile_ms);
+        }
         if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
             std::fprintf(stderr, "ttt2: gpu: cannot compile %s %016llx:\n%s\n", kind,
                          static_cast<unsigned long long>(program_hash), shaderc_result_get_error_message(result));
@@ -267,6 +322,9 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
         spirv.assign(code, code + shaderc_result_get_length(result) / 4);
         shaderc_result_release(result);
         store_cached_spirv(glsl_hash, spirv);
+    } else if (trace_shader_cache()) {
+        std::fprintf(stderr, "ttt2: gpu: shader cache HIT %s %016llx\n",
+                     kind, static_cast<unsigned long long>(program_hash));
     }
     VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     mci.codeSize = spirv.size() * 4;
@@ -423,8 +481,16 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
     gci.pColorBlendState = &cb;
     gci.pDynamicState = &dyn;
     gci.layout = entry->layout;
+    const double pipeline_begin = compile_now_ms();
     const VkResult r = vkCreateGraphicsPipelines(ctx_.device, pipeline_cache_, 1, &gci, nullptr, &entry->pipeline);
+    const double pipeline_ms = compile_now_ms() - pipeline_begin;
     ++new_pipelines_;
+    if (pipeline_ms >= 2.0 || trace_shader_cache()) {
+        std::fprintf(stderr,
+                     "ttt2: gpu: new Vulkan pipeline %.2f ms (VS %p PS %p, colors %u, depth %d)\n",
+                     pipeline_ms, static_cast<const void*>(vs), static_cast<const void*>(ps),
+                     color_count, static_cast<int>(depth));
+    }
     if (r != VK_SUCCESS) {
         std::fprintf(stderr, "ttt2: gpu: pipeline creation failed (%d)\n", static_cast<int>(r));
         entry->pipeline = VK_NULL_HANDLE;

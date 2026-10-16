@@ -500,6 +500,14 @@ void Renderer::swap() {
     ++frame_number_;
     ++frames_;
     const double t = now_seconds();
+    // Persist newly compiled pipelines quickly. This matters especially on
+    // Windows, where a crash/Alt-F4 shortly after entering a new stage used
+    // to lose all newly learned driver pipelines.
+    static double last_cache_save = t;
+    if (new_pipelines_ != 0 && t - last_cache_save >= 2.0) {
+        save_pipeline_cache();
+        last_cache_save = t;
+    }
     if (t - window_start_ >= 10.0) {
         save_pipeline_cache();
         std::fprintf(stderr, "ttt2: gpu: %.1f frames/s, %.0f draws per frame (%.0f skipped), %zu targets, %zu textures, "
