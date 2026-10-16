@@ -1,1 +1,1 @@
-v0.3.0-windows-preview
+v0.4.0-static-preview
