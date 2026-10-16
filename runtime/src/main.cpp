@@ -107,26 +107,26 @@ void redirect_runtime_log(const std::filesystem::path& game) {
     //
     // Instead create a real Win32 file handle, import it into the CRT, then
     // duplicate that known-valid descriptor directly onto fd 1 and fd 2.
-    diagnostic_trace("redirect_runtime_log: CreateFileW");
+    cafe::diagnostic_trace("redirect_runtime_log: CreateFileW");
     HANDLE raw = CreateFileW(file.c_str(), GENERIC_WRITE,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                              nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (raw == INVALID_HANDLE_VALUE) {
-        diagnostic_trace("redirect_runtime_log: CreateFileW failed");
+        cafe::diagnostic_trace("redirect_runtime_log: CreateFileW failed");
         return;
     }
 
-    diagnostic_trace("redirect_runtime_log: _open_osfhandle");
+    cafe::diagnostic_trace("redirect_runtime_log: _open_osfhandle");
     const int log_fd = _open_osfhandle(reinterpret_cast<intptr_t>(raw), _O_WRONLY | _O_TEXT);
     if (log_fd < 0) {
         CloseHandle(raw); // ownership was not transferred
-        diagnostic_trace("redirect_runtime_log: _open_osfhandle failed");
+        cafe::diagnostic_trace("redirect_runtime_log: _open_osfhandle failed");
         return;
     }
 
-    diagnostic_trace("redirect_runtime_log: _dup2 stderr");
+    cafe::diagnostic_trace("redirect_runtime_log: _dup2 stderr");
     const int stderr_result = _dup2(log_fd, 2);
-    diagnostic_trace("redirect_runtime_log: _dup2 stdout");
+    cafe::diagnostic_trace("redirect_runtime_log: _dup2 stdout");
     const int stdout_result = _dup2(log_fd, 1);
 
     // _open_osfhandle transferred ownership of raw to log_fd. The duplicated
@@ -134,7 +134,7 @@ void redirect_runtime_log(const std::filesystem::path& game) {
     _close(log_fd);
 
     if (stderr_result != 0) {
-        diagnostic_trace("redirect_runtime_log: stderr dup failed");
+        cafe::diagnostic_trace("redirect_runtime_log: stderr dup failed");
         return;
     }
 
@@ -149,7 +149,7 @@ void redirect_runtime_log(const std::filesystem::path& game) {
         }
     }
 
-    diagnostic_trace("redirect_runtime_log: stdio descriptors ready");
+    cafe::diagnostic_trace("redirect_runtime_log: stdio descriptors ready");
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     if (stdout_result == 0) std::setvbuf(stdout, nullptr, _IOLBF, 0);
 #else
