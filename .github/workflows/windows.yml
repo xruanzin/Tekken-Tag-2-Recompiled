@@ -43,8 +43,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static
 
-      - name: Compile host runtime and tools
-        run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-shader title_test memory_model_test wua_layers_test
+      - name: Compile host runtime, tools and launcher
+        run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-shader ttt2_launcher title_test memory_model_test wua_layers_test
 
       - name: Run data-independent tests
         run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test"
