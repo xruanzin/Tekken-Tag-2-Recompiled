@@ -125,8 +125,7 @@ int main(int argc, char** argv) {
     std::filesystem::path game;
     if (verify_only) {
         game = argv[2];
-    } else
- if (argc == 2) {
+    } else if (argc == 2) {
         game = argv[1];
     } else if (const auto installed = install::installed_game(); argc == 1 && installed) {
         game = *installed;
@@ -156,7 +155,7 @@ int main(int argc, char** argv) {
             return 3;
         }
         try {
-            const rpx::Image parsed = rpx::load(*rpx);
+            const cafe::rpx::Image parsed = cafe::rpx::load(*rpx);
             std::fprintf(stderr,
                          "ttt2: recognized supported EU v16 game: entry 0x%08X, %zu imports\n",
                          parsed.entry_point, parsed.imports.size());
