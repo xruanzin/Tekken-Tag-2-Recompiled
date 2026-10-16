@@ -22,6 +22,10 @@
 #include <thread>
 
 #ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <fcntl.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -95,34 +99,67 @@ void redirect_runtime_log(const std::filesystem::path& game) {
     const std::filesystem::path file =
         directory / (std::getenv("TTT2_USER_DIR") ? "last_run.log" : "ttt2-last-run.txt");
 #ifdef _WIN32
-    FILE* redirected = nullptr;
-    bool stdout_redirected = false;
-    if (_wfreopen_s(&redirected, file.c_str(), L"w", stderr) == 0 && redirected) {
-        // CREATE_NO_WINDOW/GUI launches can leave stdout without a valid CRT
-        // descriptor. Calling _dup2 with that negative descriptor invokes the
-        // MSVC invalid-parameter handler, which terminates the process with
-        // 0xC0000409 before the first log line is written.
-        const int stderr_fd = _fileno(stderr);
-        const int stdout_fd = _fileno(stdout);
-        if (stderr_fd >= 0 && stdout_fd >= 0) {
-            stdout_redirected = (_dup2(stderr_fd, stdout_fd) == 0);
-        } else {
-            // Give printf-style diagnostics somewhere to go even when the
-            // launcher created the process without console handles.
-            FILE* redirected_stdout = nullptr;
-            stdout_redirected =
-                (_wfreopen_s(&redirected_stdout, file.c_str(), L"a", stdout) == 0 &&
-                 redirected_stdout != nullptr);
+    // Do not use freopen/_fileno on the GUI-subsystem streams here. When the
+    // launcher starts the runtime with CREATE_NO_WINDOW, the MSVC CRT may
+    // expose stdout/stderr as invalid pseudo streams; touching them through
+    // _wfreopen_s/_fileno can invoke the invalid-parameter fast-fail path
+    // (0xC0000409) before a single normal log line is written.
+    //
+    // Instead create a real Win32 file handle, import it into the CRT, then
+    // duplicate that known-valid descriptor directly onto fd 1 and fd 2.
+    diagnostic_trace("redirect_runtime_log: CreateFileW");
+    HANDLE raw = CreateFileW(file.c_str(), GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) {
+        diagnostic_trace("redirect_runtime_log: CreateFileW failed");
+        return;
+    }
+
+    diagnostic_trace("redirect_runtime_log: _open_osfhandle");
+    const int log_fd = _open_osfhandle(reinterpret_cast<intptr_t>(raw), _O_WRONLY | _O_TEXT);
+    if (log_fd < 0) {
+        CloseHandle(raw); // ownership was not transferred
+        diagnostic_trace("redirect_runtime_log: _open_osfhandle failed");
+        return;
+    }
+
+    diagnostic_trace("redirect_runtime_log: _dup2 stderr");
+    const int stderr_result = _dup2(log_fd, 2);
+    diagnostic_trace("redirect_runtime_log: _dup2 stdout");
+    const int stdout_result = _dup2(log_fd, 1);
+
+    // _open_osfhandle transferred ownership of raw to log_fd. The duplicated
+    // descriptors keep their own CRT references alive after this close.
+    _close(log_fd);
+
+    if (stderr_result != 0) {
+        diagnostic_trace("redirect_runtime_log: stderr dup failed");
+        return;
+    }
+
+    const intptr_t stderr_handle = _get_osfhandle(2);
+    if (stderr_handle != -1) {
+        SetStdHandle(STD_ERROR_HANDLE, reinterpret_cast<HANDLE>(stderr_handle));
+    }
+    if (stdout_result == 0) {
+        const intptr_t stdout_handle = _get_osfhandle(1);
+        if (stdout_handle != -1) {
+            SetStdHandle(STD_OUTPUT_HANDLE, reinterpret_cast<HANDLE>(stdout_handle));
         }
     }
+
+    diagnostic_trace("redirect_runtime_log: stdio descriptors ready");
+    std::setvbuf(stderr, nullptr, _IOLBF, 0);
+    if (stdout_result == 0) std::setvbuf(stdout, nullptr, _IOLBF, 0);
 #else
     bool stdout_redirected = false;
     if (std::freopen(file.c_str(), "w", stderr)) {
         stdout_redirected = (::dup2(fileno(stderr), fileno(stdout)) >= 0);
     }
-#endif
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     if (stdout_redirected) std::setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
     std::fprintf(stderr, "ttt2: runtime log redirected to %s\n", file.string().c_str());
     std::fflush(stderr);
 }
