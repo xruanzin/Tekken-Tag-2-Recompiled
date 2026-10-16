@@ -165,6 +165,8 @@ reverse-engineering community.
 - **Upstream contributors** — fixes, testing and continued work on the original project.
 - **xruanzin** — Windows port, Windows launcher, host integration and Windows-focused
   performance/compatibility work in this fork.
+- **OpenAI ChatGPT** — AI-assisted code review, debugging, Windows launcher/UI refinements,
+  performance investigation, repository organization and documentation for this Windows fork.
 - **decaf-emu** — Wii U/GX2 research and AMD address-library work used by the runtime.
 - **Dolphin** — PowerPC interpreter/reference work used by the project's instruction tests.
 - **XenonRecomp** and **N64Recomp** — important prior art for function-level static recompilation.
