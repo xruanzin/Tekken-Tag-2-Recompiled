@@ -469,6 +469,7 @@ private:
     std::thread pipeline_compile_thread_;
 
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
+    bool pipeline_cache_warm_ = false;
     std::mutex pipeline_cache_mutex_;
     std::atomic<uint32_t> new_pipelines_{0};
 

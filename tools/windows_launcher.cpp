@@ -639,7 +639,9 @@ void apply_environment() {
     set_env(L"TTT2_REDUCE_INPUT_LAG", g_cfg.reduce_input_lag ? L"1" : L"");
     set_env(L"TTT2_ASYNC_SHADERS", g_cfg.async_shaders ? L"1" : L"0");
     set_env(L"TTT2_ASYNC_PIPELINES", L"1");
-    set_env(L"TTT2_FAST_PIPELINES", L"0");
+    // Let the renderer choose fast-create for a cold cache and optimized
+    // pipelines automatically once the persistent Vulkan cache is warm.
+    set_env(L"TTT2_FAST_PIPELINES", L"");
     set_env(L"TTT2_TEXTURE_CACHE", L"1");
     set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
 }

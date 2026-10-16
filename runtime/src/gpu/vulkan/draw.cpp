@@ -211,7 +211,8 @@ void Renderer::load_pipeline_cache() {
         VK_CHECK(vkCreatePipelineCache(ctx_.device, &pci, nullptr, &pipeline_cache_));
         data.clear();
     }
-    if (!data.empty()) {
+    pipeline_cache_warm_ = !data.empty();
+    if (pipeline_cache_warm_) {
         std::fprintf(stderr, "ttt2: gpu: loaded %.2f MB Vulkan pipeline cache\n",
                      data.size() / (1024.0 * 1024.0));
     }

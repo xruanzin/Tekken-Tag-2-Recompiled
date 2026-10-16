@@ -87,10 +87,10 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
         async_pipelines_ = *value != '\0' && *value != '0';
     }
-    // Fast-create disables driver optimization and can reduce steady-state
-    // game performance. Prefer optimized pipelines and let the disk cache
-    // pay their creation cost only once.
-    fast_pipelines_ = false;
+    // Cold cache: prioritize quick first-use creation to reduce traversal
+    // stutter. Warm cache: use fully optimized pipelines for steady-state
+    // gameplay. TTT2_FAST_PIPELINES explicitly overrides this auto policy.
+    fast_pipelines_ = !pipeline_cache_warm_;
     if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
         fast_pipelines_ = *value != '\0' && *value != '0';
     }
