@@ -19,6 +19,12 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace cafe::os {
 void init_heaps(uint32_t mem2_begin);
 int run_main_thread(uint32_t entry, uint32_t argc, uint32_t argv, uint32_t stack_size,
@@ -62,6 +68,40 @@ uint32_t guest_strdup(const char* text) {
     return address;
 }
 
+std::filesystem::path log_directory_for_game(const std::filesystem::path& game) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(game, ec)) return game / "logs";
+    if (game.has_parent_path()) return game.parent_path() / "logs";
+    return std::filesystem::current_path(ec) / "logs";
+}
+
+void redirect_runtime_log(const std::filesystem::path& game) {
+    std::filesystem::path directory = log_directory_for_game(game);
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec) {
+        ec.clear();
+        directory = cafe::host::data_directory() / "ttt2" / "logs";
+        std::filesystem::create_directories(directory, ec);
+    }
+    if (ec) return;
+
+    const std::filesystem::path file = directory / "ttt2-last-run.txt";
+#ifdef _WIN32
+    FILE* redirected = nullptr;
+    if (_wfreopen_s(&redirected, file.c_str(), L"w", stderr) == 0 && redirected) {
+        _dup2(_fileno(stderr), _fileno(stdout));
+    }
+#else
+    if (std::freopen(file.c_str(), "w", stderr)) {
+        ::dup2(fileno(stderr), fileno(stdout));
+    }
+#endif
+    std::setvbuf(stderr, nullptr, _IOLBF, 0);
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    std::fprintf(stderr, "ttt2: runtime log redirected to %s\n", file.string().c_str());
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -82,6 +122,7 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 2;
     }
+    redirect_runtime_log(game);
     install_fault_handler();
     vfs::open_game(game);
     if (const char* save = std::getenv("TTT2_SAVE_DIR")) {

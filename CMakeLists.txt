@@ -90,6 +90,15 @@ if(TTT2_GENERATED_DIR)
 
     add_executable(ttt2 runtime/src/main.cpp)
     target_link_libraries(ttt2 PRIVATE cafe_runtime ttt2_generated)
+    # Keep the Windows game process silent: diagnostics are redirected by
+    # runtime/src/main.cpp to logs/ttt2-last-run.txt beside the selected game.
+    # mainCRTStartup preserves the normal main(argc, argv) entry point while
+    # the WINDOWS subsystem prevents Windows from creating a console window.
+    if(MSVC)
+        target_link_options(ttt2 PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+    elseif(MINGW)
+        target_link_options(ttt2 PRIVATE -mwindows)
+    endif()
     if(WIN32 AND TTT2_WINDOWS_RESOURCE AND EXISTS "${TTT2_WINDOWS_RESOURCE}")
         set_source_files_properties("${TTT2_WINDOWS_RESOURCE}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
         target_sources(ttt2 PRIVATE "${TTT2_WINDOWS_RESOURCE}")

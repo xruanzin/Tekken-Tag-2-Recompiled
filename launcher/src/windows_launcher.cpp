@@ -665,8 +665,8 @@ bool launch_game() {
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
     const std::wstring working = g_exe.parent_path().wstring();
-    const BOOL ok = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE, 0,
-                                   nullptr, working.c_str(), &startup, &process);
+    const BOOL ok = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
+                                   CREATE_NO_WINDOW, nullptr, working.c_str(), &startup, &process);
     if (!ok) {
         const std::wstring message = L"Failed to start ttt2.exe. Windows error: " + std::to_wstring(GetLastError());
         MessageBoxW(g_main, message.c_str(), L"TTT2 Launcher", MB_ICONERROR | MB_OK);
