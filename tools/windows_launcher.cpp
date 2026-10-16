@@ -274,13 +274,13 @@ const wchar_t* reduce_input_lag_text() {
 
 const wchar_t* async_shaders_text() {
     static constexpr const wchar_t* labels[] = {
-        L"Compilação assíncrona de shaders (reduz travadas)",
-        L"Asynchronous shader compilation (reduces stutter)",
-        L"Compilación asíncrona de shaders (reduce tirones)",
-        L"Compilation asynchrone des shaders (réduit les saccades)",
-        L"Asynchrone Shader-Kompilierung (weniger Ruckler)",
-        L"Compilazione shader asincrona (riduce gli scatti)",
-        L"非同期シェーダーコンパイル（カクつきを軽減）"
+        L"Compilação assíncrona de shaders/pipelines (reduz travadas)",
+        L"Asynchronous shader/pipeline compilation (reduces stutter)",
+        L"Compilación asíncrona de shaders/pipelines (reduce tirones)",
+        L"Compilation asynchrone shaders/pipelines (réduit les saccades)",
+        L"Asynchrone Shader/Pipeline-Kompilierung (weniger Ruckler)",
+        L"Compilazione shader/pipeline asincrona (riduce gli scatti)",
+        L"非同期シェーダー/パイプラインコンパイル"
     };
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
@@ -608,6 +608,8 @@ void apply_environment() {
     set_env(L"TTT2_AUDIO_VOLUME", std::to_wstring(g_cfg.volume));
     set_env(L"TTT2_REDUCE_INPUT_LAG", g_cfg.reduce_input_lag ? L"1" : L"");
     set_env(L"TTT2_ASYNC_SHADERS", g_cfg.async_shaders ? L"1" : L"0");
+    set_env(L"TTT2_ASYNC_PIPELINES", g_cfg.async_shaders ? L"1" : L"0");
+    set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
 }
 
 bool launch_game() {

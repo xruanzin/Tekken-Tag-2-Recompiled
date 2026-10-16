@@ -45,7 +45,10 @@ uint32_t strip_swizzle(uint32_t address, uint32_t tile_mode) {
 // texture-compression targets and the GamePad screen are other sizes.
 bool Renderer::upscaled_size(uint32_t width, uint32_t height) const {
     if (scale_ <= 1 || width < 64) return false;
-    for (uint32_t k = 0; k < 4; ++k) {
+    const uint32_t full_height = ((720u + 15) / 16) * 16;
+    if (height == full_height) return true;
+    if (native_effect_buffers_) return false;
+    for (uint32_t k = 1; k < 4; ++k) {
         if (height == ((720u >> k) + 15) / 16 * 16) return true;
     }
     return false;

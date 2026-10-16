@@ -81,6 +81,20 @@ Renderer::Renderer() {
         shader_compile_thread_ = std::thread([this] { shader_worker_main(); });
     }
     load_pipeline_cache();
+    async_pipelines_ = async_shaders_;
+    if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
+        async_pipelines_ = *value != '\0' && *value != '0';
+    }
+    if (const char* value = std::getenv("TTT2_NATIVE_EFFECT_BUFFERS")) {
+        native_effect_buffers_ = *value != '\0' && *value != '0';
+    }
+    if (async_pipelines_) {
+        std::fprintf(stderr, "ttt2: GPU: asynchronous Vulkan pipeline compilation enabled\n");
+        pipeline_compile_thread_ = std::thread([this] { pipeline_worker_main(); });
+    }
+    if (native_effect_buffers_ && scale_ > 1) {
+        std::fprintf(stderr, "ttt2: GPU: intermediate effect buffers stay at native resolution\n");
+    }
     surface_ = host::create_vulkan_surface(ctx_.instance);
     init_interpolation();
     start_presenter();
@@ -94,6 +108,14 @@ Renderer::~Renderer() {
     }
     shader_compile_cv_.notify_all();
     if (shader_compile_thread_.joinable()) shader_compile_thread_.join();
+
+    {
+        std::lock_guard lock(pipeline_compile_mutex_);
+        pipeline_compile_stop_ = true;
+    }
+    pipeline_compile_cv_.notify_all();
+    if (pipeline_compile_thread_.joinable()) pipeline_compile_thread_.join();
+
     save_pipeline_cache();
     if (compiler_ != nullptr) shaderc_compiler_release(compiler_);
 }

@@ -218,8 +218,8 @@ void Renderer::load_pipeline_cache() {
 }
 
 void Renderer::save_pipeline_cache() {
-    if (new_pipelines_ == 0 || cache_directory().empty()) return;
-    new_pipelines_ = 0;
+    if (new_pipelines_.exchange(0, std::memory_order_acq_rel) == 0 || cache_directory().empty()) return;
+    std::lock_guard cache_lock(pipeline_cache_mutex_);
     size_t size = 0;
     if (vkGetPipelineCacheData(ctx_.device, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0) return;
     std::vector<char> data(size);
@@ -413,6 +413,133 @@ void Renderer::shader_worker_main() {
     shaderc_compiler_release(compiler);
 }
 
+
+void Renderer::pipeline_worker_main() {
+    host::set_thread_name("pipeline-compile");
+    for (;;) {
+        PipelineCompileTask task;
+        {
+            std::unique_lock lock(pipeline_compile_mutex_);
+            pipeline_compile_cv_.wait(lock, [&] {
+                return pipeline_compile_stop_ || !pipeline_compile_queue_.empty();
+            });
+            if (pipeline_compile_stop_ && pipeline_compile_queue_.empty()) break;
+            task = std::move(pipeline_compile_queue_.front());
+            pipeline_compile_queue_.pop_front();
+        }
+
+        Pipeline* entry = task.entry;
+        const ShaderModule* vs = entry->vs;
+        const ShaderModule* ps = entry->ps;
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vs->module;
+        stages[0].pName = "main";
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = ps->module;
+        stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = task.topology_class == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                    : task.topology_class == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                                               : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vp.viewportCount = 1;
+        vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = task.polygon_mode == 0 ? VK_POLYGON_MODE_POINT
+                       : task.polygon_mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+        rs.depthClampEnable = task.depth_clamp ? VK_TRUE : VK_FALSE;
+        rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+        VkPipelineColorBlendAttachmentState attachments[8]{};
+        for (uint32_t i = 0; i < task.color_count; ++i) {
+            auto& a = attachments[i];
+            a.colorWriteMask = task.colors[i] == VK_FORMAT_UNDEFINED ? 0 : (task.write_mask >> (4 * i)) & 0xF;
+            if (task.blend[i]) {
+                const uint32_t b = task.blend[i];
+                a.blendEnable = VK_TRUE;
+                a.srcColorBlendFactor = blend_factor(b & 0x1F);
+                a.colorBlendOp = blend_op((b >> 5) & 7);
+                a.dstColorBlendFactor = blend_factor((b >> 8) & 0x1F);
+                if ((b >> 29) & 1) {
+                    a.srcAlphaBlendFactor = blend_factor((b >> 16) & 0x1F);
+                    a.alphaBlendOp = blend_op((b >> 21) & 7);
+                    a.dstAlphaBlendFactor = blend_factor((b >> 24) & 0x1F);
+                } else {
+                    a.srcAlphaBlendFactor = a.srcColorBlendFactor;
+                    a.alphaBlendOp = a.colorBlendOp;
+                    a.dstAlphaBlendFactor = a.dstColorBlendFactor;
+                }
+            }
+        }
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = task.color_count;
+        cb.pAttachments = attachments;
+
+        static const VkDynamicState kDynamic[] = {
+            VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_DEPTH_BIAS,
+            VK_DYNAMIC_STATE_BLEND_CONSTANTS, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
+            VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE,
+            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
+            VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
+        };
+        VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dyn.dynamicStateCount = static_cast<uint32_t>(std::size(kDynamic));
+        dyn.pDynamicStates = kDynamic;
+
+        VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        ri.colorAttachmentCount = task.color_count;
+        ri.pColorAttachmentFormats = task.colors.data();
+        ri.depthAttachmentFormat = task.depth;
+        ri.stencilAttachmentFormat = has_stencil(task.depth) ? task.depth : VK_FORMAT_UNDEFINED;
+
+        VkGraphicsPipelineCreateInfo gci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gci.pNext = &ri;
+        gci.stageCount = 2;
+        gci.pStages = stages;
+        gci.pVertexInputState = &vi;
+        gci.pInputAssemblyState = &ia;
+        gci.pViewportState = &vp;
+        gci.pRasterizationState = &rs;
+        gci.pMultisampleState = &ms;
+        gci.pDepthStencilState = &ds;
+        gci.pColorBlendState = &cb;
+        gci.pDynamicState = &dyn;
+        gci.layout = entry->layout;
+
+        const double begin = compile_now_ms();
+        VkResult result;
+        {
+            std::lock_guard cache_lock(pipeline_cache_mutex_);
+            result = vkCreateGraphicsPipelines(ctx_.device, pipeline_cache_, 1, &gci, nullptr, &entry->pipeline);
+        }
+        const double elapsed = compile_now_ms() - begin;
+        if (result != VK_SUCCESS) {
+            std::fprintf(stderr, "ttt2: gpu: async Vulkan pipeline creation failed (%d)\n",
+                         static_cast<int>(result));
+            entry->pipeline = VK_NULL_HANDLE;
+            entry->state.store(3, std::memory_order_release);
+            continue;
+        }
+        new_pipelines_.fetch_add(1, std::memory_order_relaxed);
+        if (elapsed >= 2.0 || trace_shader_cache()) {
+            std::fprintf(stderr,
+                         "ttt2: gpu: async Vulkan pipeline ready in %.2f ms (colors %u, depth %d)\n",
+                         elapsed, task.color_count, static_cast<int>(task.depth));
+        }
+        entry->state.store(2, std::memory_order_release);
+    }
+}
+
 // -------------------------------------------------------------- pipelines
 
 VkPipelineLayout Renderer::pipeline_layout(uint32_t vs_textures, uint32_t ps_textures, bool vs_registers,
@@ -477,12 +604,43 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
 
     const uint64_t key = fnv(&k, sizeof(k));
     auto& entry = pipelines_[key];
-    if (entry) return entry->pipeline ? entry.get() : nullptr;
+    if (entry) {
+        const uint8_t state = entry->state.load(std::memory_order_acquire);
+        if (state == 1) {
+            pipeline_pending_ = true;
+            return nullptr;
+        }
+        if (state == 3) return nullptr;
+        return entry->pipeline ? entry.get() : nullptr;
+    }
     entry = std::make_unique<Pipeline>();
     entry->vs = vs;
     entry->ps = ps;
     entry->layout = pipeline_layout(vs->info.texture_mask, ps->info.texture_mask, vs->info.uses_registers,
                                     ps->info.uses_registers);
+
+    if (async_pipelines_) {
+        PipelineCompileTask task;
+        task.entry = entry.get();
+        task.color_count = color_count;
+        task.depth = depth;
+        task.write_mask = k.write_mask;
+        task.polygon_mode = k.polygon_mode;
+        task.topology_class = k.topology_class;
+        task.depth_clamp = k.depth_clamp != 0;
+        for (uint32_t i = 0; i < 8; ++i) {
+            task.colors[i] = k.colors[i];
+            task.blend[i] = k.blend[i];
+        }
+        entry->state.store(1, std::memory_order_release);
+        {
+            std::lock_guard lock(pipeline_compile_mutex_);
+            pipeline_compile_queue_.push_back(std::move(task));
+        }
+        pipeline_compile_cv_.notify_one();
+        pipeline_pending_ = true;
+        return nullptr;
+    }
 
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -562,9 +720,13 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
     gci.pDynamicState = &dyn;
     gci.layout = entry->layout;
     const double pipeline_begin = compile_now_ms();
-    const VkResult r = vkCreateGraphicsPipelines(ctx_.device, pipeline_cache_, 1, &gci, nullptr, &entry->pipeline);
+    VkResult r;
+    {
+        std::lock_guard cache_lock(pipeline_cache_mutex_);
+        r = vkCreateGraphicsPipelines(ctx_.device, pipeline_cache_, 1, &gci, nullptr, &entry->pipeline);
+    }
     const double pipeline_ms = compile_now_ms() - pipeline_begin;
-    ++new_pipelines_;
+    new_pipelines_.fetch_add(1, std::memory_order_relaxed);
     if (pipeline_ms >= 2.0 || trace_shader_cache()) {
         std::fprintf(stderr,
                      "ttt2: gpu: new Vulkan pipeline %.2f ms (VS %p PS %p, colors %u, depth %d)\n",
@@ -574,8 +736,10 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
     if (r != VK_SUCCESS) {
         std::fprintf(stderr, "ttt2: gpu: pipeline creation failed (%d)\n", static_cast<int>(r));
         entry->pipeline = VK_NULL_HANDLE;
+        entry->state.store(3, std::memory_order_release);
         return nullptr;
     }
+    entry->state.store(2, std::memory_order_release);
     return entry.get();
 }
 
@@ -708,9 +872,10 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     VkFormat formats[8]{};
     for (uint32_t i = 0; i < color_count; ++i) formats[i] = colors[i] ? colors[i]->image.format : VK_FORMAT_UNDEFINED;
     const VkFormat depth_format = depth ? depth->image.format : VK_FORMAT_UNDEFINED;
+    pipeline_pending_ = false;
     const Pipeline* pipe = pipeline(regs, vs, ps, formats, color_count, depth_format, topology_class);
     if (pipe == nullptr) {
-        report_once("draw skipped: pipeline could not be created", 0);
+        if (!pipeline_pending_) report_once("draw skipped: pipeline could not be created", 0);
         ++skipped_draws_;
         return;
     }

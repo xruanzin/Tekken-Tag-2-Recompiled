@@ -109,6 +109,9 @@ struct ShaderModule {
 };
 
 struct Pipeline {
+    // 0 = synchronous/not started, 1 = compiling asynchronously,
+    // 2 = ready, 3 = failed.
+    std::atomic<uint8_t> state{0};
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     const ShaderModule* vs = nullptr;
@@ -375,6 +378,7 @@ private:
     void save_sequence_image(uint32_t n);
 
     uint32_t scale_ = 1; // upscaling factor of screen-sized targets
+    bool native_effect_buffers_ = false; // keep half/quarter-size post FX native when requested
     Context ctx_;
     GuestMemory guest_;
     UploadRing ring_;
@@ -442,8 +446,30 @@ private:
 
     std::unordered_map<uint64_t, VkPipelineLayout> layouts_;
     std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> pipelines_;
+
+    struct PipelineCompileTask {
+        Pipeline* entry = nullptr;
+        std::array<VkFormat, 8> colors{};
+        VkFormat depth = VK_FORMAT_UNDEFINED;
+        uint32_t color_count = 0;
+        std::array<uint32_t, 8> blend{};
+        uint32_t write_mask = 0;
+        uint32_t polygon_mode = 2;
+        uint32_t topology_class = 2;
+        bool depth_clamp = false;
+    };
+    void pipeline_worker_main();
+    bool async_pipelines_ = false;
+    bool pipeline_pending_ = false;
+    bool pipeline_compile_stop_ = false;
+    std::mutex pipeline_compile_mutex_;
+    std::condition_variable pipeline_compile_cv_;
+    std::deque<PipelineCompileTask> pipeline_compile_queue_;
+    std::thread pipeline_compile_thread_;
+
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
-    uint32_t new_pipelines_ = 0;
+    std::mutex pipeline_cache_mutex_;
+    std::atomic<uint32_t> new_pipelines_{0};
 
     // Scan-out: the last frame copied to each scan buffer (TV, DRC).
     Image scan_[2];
