@@ -630,11 +630,14 @@ void set_env(const wchar_t* name, const std::wstring& value) {
 
 void apply_environment() {
     const fs::path user = g_root / L"user";
+    const fs::path out = g_root / L"out";
     std::error_code user_ec;
     fs::create_directories(user, user_ec);
+    user_ec.clear();
+    fs::create_directories(out, user_ec);
     set_env(L"TTT2_USER_DIR", user.wstring());
     set_env(L"TTT2_SAVE_DIR", (user / L"save").wstring());
-    set_env(L"TTT2_CODE_CACHE_DIR", (user / L"code-cache").wstring());
+    set_env(L"TTT2_CODE_CACHE_DIR", (out / L"code-cache").wstring());
 
     // Internal rendering.
     if (g_cfg.render_scale == 0) set_env(L"TTT2_SCALE", L"");
