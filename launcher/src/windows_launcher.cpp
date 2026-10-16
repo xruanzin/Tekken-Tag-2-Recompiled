@@ -542,6 +542,19 @@ const wchar_t* prepare_game_text() {
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
 
+const wchar_t* select_game_prepare_text() {
+    static constexpr const wchar_t* labels[] = {
+        L"Selecione a pasta do jogo e clique em PREPARAR JOGO.",
+        L"Select the game folder and click PREPARE GAME.",
+        L"Selecciona la carpeta del juego y pulsa PREPARAR JUEGO.",
+        L"Sélectionnez le dossier du jeu puis cliquez sur PRÉPARER LE JEU.",
+        L"Spielordner wählen und SPIEL VORBEREITEN anklicken.",
+        L"Seleziona la cartella del gioco e premi PREPARA GIOCO.",
+        L"ゲームフォルダーを選び、ゲームを準備を押してください。"
+    };
+    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
+}
+
 const wchar_t* preparing_game_text() {
     static constexpr const wchar_t* labels[] = {
         L"Preparando primeira execução...", L"Preparing first run...", L"Preparando primera ejecución...",
@@ -1063,12 +1076,12 @@ void create_home() {
     make_static(page, L"NATIVE RECOMPILATION", 24, 333, 260, 24, g_small);
 
     g_setup_status = make_static(page,
-        g_exe.empty() ? L"Selecione a pasta extraída do jogo e prepare a primeira execução." : ready_game_text(),
-        24, 352, 319, 24, g_small);
+        g_exe.empty() ? select_game_prepare_text() : ready_game_text(),
+        24, 352, 319, 38, g_small);
     g_play = make_button(page, ID_PLAY, g_exe.empty() ? prepare_game_text() : tr(T_PLAY),
-                         24, 378, 319, 58, true);
-    make_button(page, ID_SAVE, tr(T_SAVE), 24, 452, 150, 42, true);
-    make_button(page, ID_RESET, tr(T_RESET), 185, 452, 158, 42, true);
+                         24, 394, 319, 54, true);
+    make_button(page, ID_SAVE, tr(T_SAVE), 24, 460, 150, 40, true);
+    make_button(page, ID_RESET, tr(T_RESET), 185, 460, 158, 40, true);
 
     make_static(page, L"60 / 120 / 180 / 240 FPS", 395, 296, 330, 26, g_nav_font);
     make_static(page, L"FSR 1  •  ASYNC SHADERS  •  LOW LATENCY", 395, 327, 360, 24, g_small);
@@ -1322,7 +1335,7 @@ void handle_browse() {
     g_cfg.game = *chosen;
     SetWindowTextW(g_game_edit, g_cfg.game.c_str());
     if (g_setup_status && g_exe.empty()) {
-        SetWindowTextW(g_setup_status, L"Jogo selecionado. Clique em PREPARAR JOGO.");
+        SetWindowTextW(g_setup_status, select_game_prepare_text());
     }
 }
 
