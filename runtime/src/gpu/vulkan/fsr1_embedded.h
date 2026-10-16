@@ -3,7 +3,7 @@
 // Source: GPUOpen-Effects/FidelityFX-FSR (MIT license; license text is
 // retained inside the embedded upstream files).
 namespace cafe::gpu::vk::fsr1_embedded {
-inline constexpr const char kFfxA[] = R"TTT2_FFX_A_EMBED(
+inline constexpr const char kFfxA[] = R"FSRA(
 //==============================================================================================================================
 //
 //                                               [A] SHADER PORTABILITY 1.20210629
@@ -2661,8 +2661,8 @@ inline constexpr const char kFfxA[] = R"TTT2_FFX_A_EMBED(
  AF4 opARcpF4(outAF4 d,inAF4 a){d=ARcpF4(a);return d;}
 #endif
 
-)TTT2_FFX_A_EMBED";
-inline constexpr const char kFfxFsr1[] = R"TTT2_FFX_FSR1_EMBED(
+)FSRA";
+inline constexpr const char kFfxFsr1[] = R"FSR1(
 //_____________________________________________________________/\_______________________________________________________________
 //==============================================================================================================================
 //
@@ -3863,5 +3863,5 @@ AF1 sharpness){
   cB=ASatH2(nB+AGtZeroH2(dit-rB)*AH2_(1.0/1023.0));}
 #endif
 
-)TTT2_FFX_FSR1_EMBED";
+)FSR1";
 } // namespace cafe::gpu::vk::fsr1_embedded
