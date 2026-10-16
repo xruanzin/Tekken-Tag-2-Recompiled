@@ -159,6 +159,7 @@ private:
                        uint32_t levels, VkImageUsageFlags usage, VkImageViewType view_type, bool shared = false);
     void destroy_image(Image& image);
     void end_rendering();
+    void end_rendering_and_barrier();
     uint64_t stamp() { return ++events_; }
 
     // ------------------------------------------------- targets (targets.cpp)
