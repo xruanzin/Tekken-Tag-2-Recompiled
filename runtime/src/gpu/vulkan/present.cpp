@@ -563,6 +563,7 @@ void Renderer::choose_presentation(double hz) {
 
 void Renderer::presenter_main() {
     host::set_thread_name("present");
+    host::set_thread_high_priority();
     // The mode follows the window's display: chosen again when the window
     // moves to another display or its mode changes, or when the display
     // turns out to refresh at another rate than reported.
