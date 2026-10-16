@@ -112,3 +112,31 @@ else()
     target_compile_options(memory_model_test PRIVATE -O2 -march=x86-64-v3 -Wno-unused-label)
 endif()
 add_test(NAME memory_model_test COMMAND memory_model_test)
+
+
+# Generic dynamic executor vs the same instruction semantics emitted by the
+# ahead-of-time recompiler. This needs no game files and runs in Windows CI.
+set(dynamic_semantics_cases "${CMAKE_CURRENT_BINARY_DIR}/dynamic_semantics_cases.cpp")
+add_custom_command(OUTPUT "${dynamic_semantics_cases}"
+    COMMAND cafe-semgen --generic "${dynamic_semantics_cases}" 6
+    DEPENDS cafe-semgen
+    COMMENT "Generating game-independent PPC differential cases"
+    VERBATIM)
+
+add_executable(dynamic_semantics_test
+    dynamic_semantics_test.cpp
+    "${dynamic_semantics_cases}"
+    ${CMAKE_SOURCE_DIR}/runtime/src/dynamic.cpp)
+target_include_directories(dynamic_semantics_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime/include
+    ${CMAKE_SOURCE_DIR}/runtime/src
+    ${CMAKE_SOURCE_DIR}/recomp/src)
+target_link_libraries(dynamic_semantics_test PRIVATE cafe_recomp)
+target_compile_features(dynamic_semantics_test PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(dynamic_semantics_test PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(dynamic_semantics_test PRIVATE -O2 -march=x86-64-v3)
+endif()
+ttt2_warnings(dynamic_semantics_test)
+add_test(NAME dynamic_semantics_test COMMAND dynamic_semantics_test)
