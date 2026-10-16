@@ -126,9 +126,36 @@ void set_thread_name(std::string_view name) {
 #endif
 }
 
+void set_thread_high_priority() {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
+}
+
 void set_thread_low_priority() {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+}
+
+void set_guest_core_hint(int core) {
+#ifdef _WIN32
+    if (core < 0) return;
+
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const DWORD logical = std::max<DWORD>(1, info.dwNumberOfProcessors);
+
+    // On common SMT systems (including Ryzen 5 4600G) adjacent logical
+    // processors are sibling threads of one physical core. Prefer separate
+    // physical cores for Cafe core 0/1/2 without hard-pinning every guest
+    // thread, so Windows can still migrate under load.
+    DWORD ideal = static_cast<DWORD>(core);
+    if (logical >= 6) ideal = static_cast<DWORD>(core * 2);
+    ideal %= logical;
+    SetThreadIdealProcessor(GetCurrentThread(), ideal);
+#else
+    (void)core;
 #endif
 }
 
