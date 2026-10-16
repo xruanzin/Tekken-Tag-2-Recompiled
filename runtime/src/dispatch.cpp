@@ -3,6 +3,8 @@
 #include "cafe/runtime.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -100,5 +102,20 @@ extern "C" cafe::PPCFunc* cafe_ppc_lookup(uint32_t address) {
                   "function",
                   address);
         }
+    }
+}
+
+
+extern "C" uint32_t cafe_ppc_runtime_option(uint32_t option) {
+    switch (option) {
+    case 1: {
+        static const bool enabled = [] {
+            const char* value = std::getenv("TTT2_REDUCE_INPUT_LAG");
+            return value && *value && std::strcmp(value, "0") != 0;
+        }();
+        return enabled ? 1u : 0u;
+    }
+    default:
+        return 0;
     }
 }

@@ -222,6 +222,7 @@ struct Config {
     int controller = 0;      // auto/xbox/playstation/nintendo
     bool audio = true;
     int volume = 100;
+    bool reduce_input_lag = true;
 };
 
 HINSTANCE g_instance = nullptr;
@@ -240,11 +241,25 @@ HWND g_display_mode = nullptr, g_output_res = nullptr, g_fps = nullptr, g_fill =
 HWND g_render_scale = nullptr, g_aa = nullptr, g_upscaler = nullptr, g_aniso = nullptr;
 HWND g_sharpen = nullptr, g_sharpen_value = nullptr;
 HWND g_game_language = nullptr, g_controller = nullptr, g_audio = nullptr, g_volume = nullptr, g_volume_value = nullptr;
+HWND g_reduce_input_lag = nullptr;
 HWND g_ui_language = nullptr;
 
 const wchar_t* tr(TextKey key) {
     const int lang = std::clamp(g_cfg.ui_language, 0, static_cast<int>(kLanguages.size()) - 1);
     return kLanguages[lang][key];
+}
+
+const wchar_t* reduce_input_lag_text() {
+    static constexpr const wchar_t* labels[] = {
+        L"Reduzir input lag (remove 2 frames de atraso forçado)",
+        L"Reduce input lag (remove 2 frames of forced delay)",
+        L"Reducir input lag (elimina 2 fotogramas de retraso forzado)",
+        L"Réduire l'input lag (supprime 2 images de délai forcé)",
+        L"Input-Lag reduzieren (2 erzwungene Frames entfernen)",
+        L"Riduci input lag (rimuove 2 frame di ritardo forzato)",
+        L"入力遅延を軽減（強制 2 フレーム遅延を解除）"
+    };
+    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
 
 fs::path module_path() {
@@ -309,6 +324,7 @@ void load_config() {
     g_cfg.controller = std::clamp(ini_int(L"Game", L"Controller", 0), 0, 3);
     g_cfg.audio = ini_int(L"Game", L"Audio", 1) != 0;
     g_cfg.volume = std::clamp(ini_int(L"Game", L"Volume", 100), 0, 100);
+    g_cfg.reduce_input_lag = ini_int(L"Game", L"ReduceInputLag", 1) != 0;
 }
 
 void save_config() {
@@ -328,6 +344,7 @@ void save_config() {
     put_int(L"Game", L"Controller", g_cfg.controller);
     put_int(L"Game", L"Audio", g_cfg.audio ? 1 : 0);
     put_int(L"Game", L"Volume", g_cfg.volume);
+    put_int(L"Game", L"ReduceInputLag", g_cfg.reduce_input_lag ? 1 : 0);
 }
 
 fs::path find_game_executable() {
@@ -439,6 +456,7 @@ void apply_environment() {
 
     set_env(L"TTT2_AUDIO", g_cfg.audio ? L"" : L"0");
     set_env(L"TTT2_AUDIO_VOLUME", std::to_wstring(g_cfg.volume));
+    set_env(L"TTT2_REDUCE_INPUT_LAG", g_cfg.reduce_input_lag ? L"1" : L"");
 }
 
 bool launch_game() {
@@ -560,6 +578,7 @@ void sync_from_controls() {
     if (g_controller) g_cfg.controller = combo_sel(g_controller);
     if (g_audio) g_cfg.audio = SendMessageW(g_audio, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (g_volume) g_cfg.volume = static_cast<int>(SendMessageW(g_volume, TBM_GETPOS, 0, 0));
+    if (g_reduce_input_lag) g_cfg.reduce_input_lag = SendMessageW(g_reduce_input_lag, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (g_ui_language) g_cfg.ui_language = combo_sel(g_ui_language);
 }
 
@@ -747,6 +766,7 @@ void create_game() {
     label(page, tr(T_VOLUME), 24, 290);
     g_volume = make_slider(page, ID_VOLUME, 24, 318, 280, 0, 100, g_cfg.volume);
     g_volume_value = make_static(page, L"", 315, 320, 80, 24, g_small);
+    g_reduce_input_lag = make_checkbox(page, 500, reduce_input_lag_text(), 24, 375, 700, 34, g_cfg.reduce_input_lag);
     update_slider_texts();
 
     make_static(page, L"Cemu graphic-pack reference", 410, 235, 300, 24, g_nav_font);
@@ -777,6 +797,7 @@ void destroy_pages() {
     g_display_mode = g_output_res = g_fps = g_fill = nullptr;
     g_render_scale = g_aa = g_upscaler = g_aniso = g_sharpen = g_sharpen_value = nullptr;
     g_game_language = g_controller = g_audio = g_volume = g_volume_value = nullptr;
+    g_reduce_input_lag = nullptr;
     g_ui_language = nullptr;
 }
 
