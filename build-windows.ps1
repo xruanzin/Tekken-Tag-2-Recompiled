@@ -4,7 +4,9 @@ param(
     [string]$Rpx,
     [string]$BuildDir = "build/windows",
     [string]$GeneratedDir = "generated/ttt2",
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$GameOnly,
+    [string]$OutputExe = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,9 +48,16 @@ if (-not (Test-Path -LiteralPath $PowerShellExe)) {
 
 $OriginalPath = $env:Path
 
-$GitExe = Resolve-ToolPath "git.exe"
-$CMakeExe = Resolve-ToolPath "cmake.exe"
-$NinjaExe = Resolve-ToolPath "ninja.exe"
+$GitExe = Resolve-ToolPath "git.exe" @(
+    "C:\Program Files\Git\cmd\git.exe"
+)
+$CMakeExe = Resolve-ToolPath "cmake.exe" @(
+    "C:\Program Files\CMake\bin\cmake.exe",
+    (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\cmake.exe")
+)
+$NinjaExe = Resolve-ToolPath "ninja.exe" @(
+    (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\ninja.exe")
+)
 $ClangClExe = Resolve-ToolPath "clang-cl.exe" @(
     "C:\Program Files\LLVM\bin\clang-cl.exe"
 )
@@ -67,7 +76,14 @@ if ($Py -and $Py.Source) {
     }
 }
 if (-not $PythonExe) {
-    throw "Python 3 was not found. Install Python and make python.exe available."
+    $PythonRoot = Join-Path $env:LOCALAPPDATA "Programs\Python"
+    if (Test-Path -LiteralPath $PythonRoot) {
+        $PythonCandidates = Get-ChildItem -Path $PythonRoot -Filter python.exe -File -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+        if ($PythonCandidates) { $PythonExe = $PythonCandidates[0].FullName }
+    }
+}
+if (-not $PythonExe) {
+    throw "Python 3 was not found."
 }
 
 # Keep Windows system tools visible regardless of what other installers put in PATH.
@@ -306,10 +322,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "Final CMake configure failed"
 }
 
-Write-Host "==> Building ttt2.exe and Windows launcher"
-& $CMakeExe --build $BuildPath --target ttt2 ttt2_launcher
+if ($GameOnly) {
+    Write-Host "==> Building ttt2.exe"
+    & $CMakeExe --build $BuildPath --target ttt2
+} else {
+    Write-Host "==> Building ttt2.exe and Windows launcher"
+    & $CMakeExe --build $BuildPath --target ttt2 ttt2_launcher
+}
 if ($LASTEXITCODE -ne 0) {
-    throw "Final ttt2/launcher build failed"
+    throw "Final game build failed"
 }
 
 $Exe = Join-Path $BuildPath "ttt2.exe"
@@ -317,15 +338,27 @@ if (-not (Test-Path -LiteralPath $Exe)) {
     throw "Build completed but ttt2.exe was not found at $Exe"
 }
 
-$LauncherBuilt = Join-Path $BuildPath "TTT2 Launcher.exe"
-if (-not (Test-Path -LiteralPath $LauncherBuilt)) {
-    throw "Build completed but TTT2 Launcher.exe was not found at $LauncherBuilt"
+$FinalExe = $Exe
+if ($OutputExe) {
+    $OutputPath = [System.IO.Path]::GetFullPath($OutputExe)
+    $OutputParent = Split-Path -Parent $OutputPath
+    if ($OutputParent) { New-Item -ItemType Directory -Force $OutputParent | Out-Null }
+    Copy-Item -LiteralPath $Exe -Destination $OutputPath -Force
+    $FinalExe = $OutputPath
 }
-$LauncherRoot = Join-Path $Root "TTT2 Launcher.exe"
-Copy-Item -LiteralPath $LauncherBuilt -Destination $LauncherRoot -Force
+
+$LauncherRoot = $null
+if (-not $GameOnly) {
+    $LauncherBuilt = Join-Path $BuildPath "TTT2 Launcher.exe"
+    if (-not (Test-Path -LiteralPath $LauncherBuilt)) {
+        throw "Build completed but TTT2 Launcher.exe was not found at $LauncherBuilt"
+    }
+    $LauncherRoot = Join-Path $Root "TTT2 Launcher.exe"
+    Copy-Item -LiteralPath $LauncherBuilt -Destination $LauncherRoot -Force
+}
 
 Write-Host ""
 Write-Host "SUCCESS"
-Write-Host "Executable: $Exe"
-Write-Host "Launcher:   $LauncherRoot"
+Write-Host "Executable: $FinalExe"
+if ($LauncherRoot) { Write-Host "Launcher:   $LauncherRoot" }
 Write-Host "Run the root launcher, or run ttt2.exe with your own .wua/extracted European v16 title folder."
