@@ -19,6 +19,8 @@ void set_thread_name(std::string_view name);
 void set_thread_high_priority();
 void set_thread_low_priority();
 void set_guest_core_hint(int core);
+uint64_t system_memory_total_bytes();
+uint64_t system_memory_available_bytes();
 int64_t local_utc_offset_seconds(std::time_t when);
 
 } // namespace cafe::host
