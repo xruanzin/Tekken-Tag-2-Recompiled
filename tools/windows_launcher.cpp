@@ -6,6 +6,7 @@
 #include <dwmapi.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -21,16 +23,19 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr COLORREF kBg = RGB(12, 12, 15);
-constexpr COLORREF kSidebar = RGB(18, 18, 22);
-constexpr COLORREF kPanel = RGB(27, 27, 32);
-constexpr COLORREF kPanel2 = RGB(34, 34, 40);
-constexpr COLORREF kText = RGB(240, 240, 244);
-constexpr COLORREF kMuted = RGB(158, 158, 168);
-constexpr COLORREF kRed = RGB(183, 24, 43);
-constexpr COLORREF kRedDark = RGB(105, 15, 28);
-constexpr COLORREF kGold = RGB(218, 170, 76);
-constexpr COLORREF kBorder = RGB(58, 58, 68);
+constexpr COLORREF kBg = RGB(5, 7, 11);
+constexpr COLORREF kSidebar = RGB(8, 10, 15);
+constexpr COLORREF kPanel = RGB(14, 17, 23);
+constexpr COLORREF kPanel2 = RGB(24, 28, 36);
+constexpr COLORREF kText = RGB(244, 247, 250);
+constexpr COLORREF kMuted = RGB(154, 166, 182);
+constexpr COLORREF kRed = RGB(205, 24, 42);
+constexpr COLORREF kRedDark = RGB(108, 9, 22);
+constexpr COLORREF kBlue = RGB(43, 147, 232);
+constexpr COLORREF kBlueDark = RGB(16, 69, 120);
+constexpr COLORREF kIce = RGB(166, 217, 255);
+constexpr COLORREF kSilver = RGB(195, 203, 216);
+constexpr COLORREF kBorder = RGB(61, 72, 88);
 
 constexpr int kSidebarWidth = 220;
 constexpr int kContentX = 244;
@@ -228,6 +233,8 @@ struct Config {
 };
 
 HINSTANCE g_instance = nullptr;
+ULONG_PTR g_gdiplus_token = 0;
+std::unique_ptr<Gdiplus::Image> g_theme_image;
 HWND g_main = nullptr;
 std::array<HWND, kPageCount> g_pages{};
 std::array<HWND, kPageCount> g_nav{};
@@ -288,6 +295,82 @@ fs::path module_path() {
 std::wstring lower(std::wstring text) {
     std::transform(text.begin(), text.end(), text.begin(), [](wchar_t c) { return std::towlower(c); });
     return text;
+}
+
+
+fs::path find_theme_image() {
+    const std::array<fs::path, 3> candidates = {
+        g_root / L"assets" / L"ttt2_launcher_theme.jpg",
+        g_root.parent_path() / L"assets" / L"ttt2_launcher_theme.jpg",
+        g_root.parent_path().parent_path() / L"assets" / L"ttt2_launcher_theme.jpg",
+    };
+    std::error_code ec;
+    for (const fs::path& path : candidates) {
+        if (fs::is_regular_file(path, ec)) return path;
+        ec.clear();
+    }
+    return {};
+}
+
+void load_theme_image() {
+    const fs::path path = find_theme_image();
+    if (path.empty()) return;
+    std::unique_ptr<Gdiplus::Image> image(Gdiplus::Image::FromFile(path.c_str(), FALSE));
+    if (image && image->GetLastStatus() == Gdiplus::Ok) g_theme_image = std::move(image);
+}
+
+void draw_theme_cover(Gdiplus::Graphics& graphics, const Gdiplus::Rect& dst, float brightness) {
+    if (!g_theme_image || dst.Width <= 0 || dst.Height <= 0) return;
+    const UINT iw = g_theme_image->GetWidth();
+    const UINT ih = g_theme_image->GetHeight();
+    if (!iw || !ih) return;
+
+    const double src_aspect = static_cast<double>(iw) / ih;
+    const double dst_aspect = static_cast<double>(dst.Width) / dst.Height;
+    INT sx = 0, sy = 0, sw = static_cast<INT>(iw), sh = static_cast<INT>(ih);
+    if (src_aspect > dst_aspect) {
+        sw = static_cast<INT>(ih * dst_aspect);
+        sx = (static_cast<INT>(iw) - sw) / 2;
+    } else {
+        sh = static_cast<INT>(iw / dst_aspect);
+        sy = (static_cast<INT>(ih) - sh) / 2;
+    }
+
+    Gdiplus::ColorMatrix matrix = {{
+        {brightness, 0, 0, 0, 0},
+        {0, brightness, 0, 0, 0},
+        {0, 0, brightness, 0, 0},
+        {0, 0, 0, 1.0f, 0},
+        {0, 0, 0, 0, 1.0f},
+    }};
+    Gdiplus::ImageAttributes attrs;
+    attrs.SetColorMatrix(&matrix);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.DrawImage(g_theme_image.get(), dst, sx, sy, sw, sh, Gdiplus::UnitPixel, &attrs);
+}
+
+void paint_theme_surface(HDC dc, const RECT& rect, bool page, bool home = false) {
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    draw_theme_cover(graphics, Gdiplus::Rect(rect.left, rect.top, width, height), page ? 0.78f : 0.68f);
+
+    const BYTE shade = page ? (home ? 118 : 176) : 126;
+    Gdiplus::SolidBrush veil(Gdiplus::Color(shade, 4, 7, 12));
+    graphics.FillRectangle(&veil, rect.left, rect.top, width, height);
+
+    Gdiplus::LinearGradientBrush wash(
+        Gdiplus::Point(rect.left, rect.top),
+        Gdiplus::Point(rect.right, rect.bottom),
+        Gdiplus::Color(page ? 54 : 42, 196, 18, 36),
+        Gdiplus::Color(page ? 52 : 44, 23, 119, 218));
+    graphics.FillRectangle(&wash, rect.left, rect.top, width, height);
+
+    Gdiplus::SolidBrush red_line(Gdiplus::Color(230, 213, 25, 43));
+    Gdiplus::SolidBrush blue_line(Gdiplus::Color(225, 53, 160, 244));
+    graphics.FillRectangle(&red_line, rect.left, rect.top, width / 2, 3);
+    graphics.FillRectangle(&blue_line, rect.left + width / 2, rect.top, width - width / 2, 3);
 }
 
 bool valid_game(const fs::path& path) {
@@ -661,18 +744,14 @@ LRESULT CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_CTLCOLORLISTBOX:
     case WM_CTLCOLORBTN:
         return SendMessageW(g_main, msg, wparam, lparam);
-    case WM_ERASEBKGND: {
-        RECT r{};
-        GetClientRect(hwnd, &r);
-        FillRect(reinterpret_cast<HDC>(wparam), &r, g_panel_brush);
+    case WM_ERASEBKGND:
         return 1;
-    }
     case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd, &ps);
         RECT r{};
         GetClientRect(hwnd, &r);
-        FillRect(dc, &r, g_panel_brush);
+        paint_theme_surface(dc, r, true, hwnd == g_pages[kHome]);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -858,13 +937,13 @@ void draw_button(const DRAWITEMSTRUCT* item) {
     COLORREF fill = kPanel2, border = kBorder, fg = kText;
     if (id >= ID_NAV_HOME && id <= ID_NAV_LANGUAGE) {
         const int p = id - ID_NAV_HOME;
-        fill = p == g_page ? RGB(49, 22, 29) : kSidebar;
-        border = p == g_page ? kRed : kSidebar;
+        fill = p == g_page ? RGB(34, 17, 25) : kSidebar;
+        border = p == g_page ? kRed : RGB(20, 24, 31);
     } else if (id == ID_PLAY) {
         fill = pressed ? kRedDark : kRed;
-        border = kGold;
+        border = kIce;
     } else {
-        fill = pressed ? RGB(45, 45, 52) : kPanel2;
+        fill = pressed ? RGB(29, 48, 66) : kPanel2;
         border = kBorder;
     }
 
@@ -881,10 +960,14 @@ void draw_button(const DRAWITEMSTRUCT* item) {
     DeleteObject(pen);
 
     if (id >= ID_NAV_HOME && id <= ID_NAV_LANGUAGE && id - ID_NAV_HOME == g_page) {
-        RECT accent{r.left, r.top, r.left + 4, r.bottom};
-        HBRUSH gold = CreateSolidBrush(kGold);
-        FillRect(item->hDC, &accent, gold);
-        DeleteObject(gold);
+        RECT accent_left{r.left, r.top, r.left + 4, r.bottom};
+        RECT accent_right{r.right - 2, r.top, r.right, r.bottom};
+        HBRUSH red = CreateSolidBrush(kRed);
+        HBRUSH blue = CreateSolidBrush(kBlue);
+        FillRect(item->hDC, &accent_left, red);
+        FillRect(item->hDC, &accent_right, blue);
+        DeleteObject(red);
+        DeleteObject(blue);
     }
 
     SetBkMode(item->hDC, TRANSPARENT);
@@ -969,7 +1052,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         HDC dc = reinterpret_cast<HDC>(wparam);
         SetTextColor(dc, kText);
         SetBkMode(dc, TRANSPARENT);
-        return reinterpret_cast<LRESULT>(g_panel_brush);
+        return reinterpret_cast<LRESULT>(GetStockObject(HOLLOW_BRUSH));
     }
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX: {
@@ -990,36 +1073,38 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         RECT client{};
         GetClientRect(hwnd, &client);
 
-        FillRect(dc, &client, g_bg_brush);
+        paint_theme_surface(dc, client, false);
+
         RECT side{0, 0, kSidebarWidth, client.bottom};
-        HBRUSH sidebar = CreateSolidBrush(kSidebar);
+        HBRUSH sidebar = CreateSolidBrush(RGB(7, 9, 14));
         FillRect(dc, &side, sidebar);
         DeleteObject(sidebar);
 
         RECT top{kSidebarWidth, 0, client.right, 92};
-        HBRUSH panel = CreateSolidBrush(RGB(17, 17, 21));
-        FillRect(dc, &top, panel);
-        DeleteObject(panel);
+        Gdiplus::Graphics top_graphics(dc);
+        Gdiplus::SolidBrush top_veil(Gdiplus::Color(120, 6, 9, 15));
+        top_graphics.FillRectangle(&top_veil, top.left, top.top, top.right - top.left, top.bottom - top.top);
 
-        POINT slash1[] = {{client.right - 310, 0}, {client.right - 220, 0}, {client.right - 290, 92}, {client.right - 380, 92}};
-        POINT slash2[] = {{client.right - 190, 0}, {client.right - 145, 0}, {client.right - 215, 92}, {client.right - 260, 92}};
         HBRUSH red = CreateSolidBrush(kRedDark);
-        SelectObject(dc, red);
-        Polygon(dc, slash1, 4);
-        Polygon(dc, slash2, 4);
+        HBRUSH blue = CreateSolidBrush(kBlueDark);
+        RECT red_bar{kSidebarWidth, 89, kSidebarWidth + (client.right - kSidebarWidth) / 2, 92};
+        RECT blue_bar{red_bar.right, 89, client.right, 92};
+        FillRect(dc, &red_bar, red);
+        FillRect(dc, &blue_bar, blue);
         DeleteObject(red);
+        DeleteObject(blue);
 
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, kText);
         SelectObject(dc, g_title);
         RECT title{kContentX, 18, client.right - 30, 58};
         DrawTextW(dc, L"TEKKEN TAG TOURNAMENT 2", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SetTextColor(dc, kGold);
+        SetTextColor(dc, kIce);
         SelectObject(dc, g_small);
         RECT subtitle{kContentX + 2, 58, client.right - 30, 82};
         DrawTextW(dc, tr(T_SUBTITLE), -1, &subtitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        SetTextColor(dc, kGold);
+        SetTextColor(dc, kIce);
         SelectObject(dc, g_nav_font);
         RECT brand{22, 25, kSidebarWidth - 15, 55};
         DrawTextW(dc, L"TTT2", -1, &brand, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -1029,8 +1114,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         DrawTextW(dc, tr(T_TAGLINE), -1, &tag, DT_LEFT | DT_WORDBREAK);
 
         RECT footer{22, client.bottom - 58, kSidebarWidth - 15, client.bottom - 16};
-        SetTextColor(dc, RGB(110, 110, 120));
-        DrawTextW(dc, L"EU v16  •  Vulkan  •  Windows", -1, &footer, DT_LEFT | DT_WORDBREAK);
+        SetTextColor(dc, RGB(118, 132, 151));
+        DrawTextW(dc, L"EU v16  •  VULKAN 1.3  •  WINDOWS", -1, &footer, DT_LEFT | DT_WORDBREAK);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -1100,12 +1185,15 @@ bool init_window() {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     g_instance = instance;
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    Gdiplus::GdiplusStartupInput gdiplus_input;
+    Gdiplus::GdiplusStartup(&g_gdiplus_token, &gdiplus_input, nullptr);
 
     const fs::path self = module_path();
     g_root = self.empty() ? fs::current_path() : self.parent_path();
     g_ini = g_root / L"TTT2 Launcher.ini";
     g_exe = find_game_executable();
 
+    load_theme_image();
     load_config();
 
     g_bg_brush = CreateSolidBrush(kBg);
@@ -1137,6 +1225,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     DeleteObject(g_bg_brush);
     DeleteObject(g_panel_brush);
     DeleteObject(g_edit_brush);
+    g_theme_image.reset();
+    if (g_gdiplus_token) Gdiplus::GdiplusShutdown(g_gdiplus_token);
     CoUninitialize();
     return result;
 }
