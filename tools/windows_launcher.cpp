@@ -789,9 +789,9 @@ void create_game() {
     g_reduce_input_lag = make_checkbox(page, 500, reduce_input_lag_text(), 24, 375, 700, 34, g_cfg.reduce_input_lag);
     update_slider_texts();
 
-    make_static(page, L"Cemu graphic-pack reference", 410, 235, 300, 24, g_nav_font);
-    make_static(page, L"Resolution pack • FOV (v32) • Reduce Input Lag", 410, 270, 340, 46, g_small);
-    make_static(page, L"Version-specific code patches are not toggled here until validated against the compiled RPX.",
+    make_static(page, L"PERFORMANCE", 410, 235, 300, 24, g_nav_font);
+    make_static(page, L"Low-latency input • Native Vulkan rendering", 410, 270, 350, 46, g_small);
+    make_static(page, L"Performance options are applied directly by this Windows runtime.",
                 410, 325, 350, 60, g_small);
 }
 
