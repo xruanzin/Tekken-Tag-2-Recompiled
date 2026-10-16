@@ -85,7 +85,7 @@ bool texture_cache_enabled() {
 std::filesystem::path texture_cache_directory() {
     static const std::filesystem::path dir = [] {
         if (!texture_cache_enabled()) return std::filesystem::path();
-        std::filesystem::path d = host::cache_directory() / "ttt2" / "textures";
+        std::filesystem::path d = host::cache_directory() / "ttt2" / "textures-v2";
         std::error_code ec;
         std::filesystem::create_directories(d, ec);
         return ec ? std::filesystem::path() : d;
