@@ -15,7 +15,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     wchar_t* slash = wcsrchr(directory, L'\\');
     if (slash) *slash = 0;
 
-    swprintf_s(launcher, L"%ls\\Tekken Tag Tournament 2.exe", directory);
+    swprintf_s(launcher, 32768, L"%ls\\Tekken Tag Tournament 2.exe", directory);
     swprintf_s(command, L"\"%ls\" --play%ls%ls", launcher,
                arguments && *arguments ? L" " : L"",
                arguments ? arguments : L"");
