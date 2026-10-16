@@ -29,6 +29,7 @@
 #include <fstream>
 #include <future>
 #include <functional>
+#include <iterator>
 #include <mutex>
 #include <unordered_map>
 #include <memory>
