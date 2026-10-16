@@ -271,6 +271,7 @@ private:
     void copy_image(const Image& src, const Image& dst);
     std::vector<Target*> carried_; // this frame's carried targets
     uint64_t replays_ = 0, blended_replays_ = 0, skipped_replays_ = 0;
+    uint32_t interpolation_cooldown_ = 0;
     double match_seconds_ = 0, replay_seconds_ = 0;
     std::chrono::steady_clock::time_point replay_started_;
 
