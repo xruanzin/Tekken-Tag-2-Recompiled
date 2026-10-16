@@ -83,7 +83,7 @@ $QuickPlayExe = Join-Path $BuildDir "Play Tekken Tag Tournament 2.exe"
 
 if (-not $SkipBuild) {
     Write-Host "==> Building the static AOT player runtime"
-    $buildArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "build-windows.ps1"), "-Rpx", $RpxPath)
+    $buildArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "build-windows.ps1"), "-Rpx", $RpxPath, "-FullAot")
     if ($Clean) { $buildArgs += "-Clean" }
     & powershell.exe @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "build-windows.ps1 failed with exit code $LASTEXITCODE" }
@@ -136,7 +136,10 @@ $TotalEntries = [int64]$ProgramInfoMatch.Groups[3].Value
 if ($GeneratedDigest -ne $ExpectedRpxSha256 -or $CompiledEntries -le 0 -or $TotalEntries -le 0) {
     throw "Refusing to package: generated code is not the supported static AOT EU v16 build."
 }
-Write-Host "==> Static AOT metadata verified: $CompiledEntries/$TotalEntries guest entries compiled"
+if ($CompiledEntries -ne $TotalEntries) {
+    throw "Refusing to package an incomplete AOT runtime: $CompiledEntries/$TotalEntries guest entries compiled. Rebuild without -SkipBuild so release-windows.ps1 can generate a full AOT runtime."
+}
+Write-Host "==> Full static AOT metadata verified: $CompiledEntries/$TotalEntries guest entries compiled"
 
 # The runtime's own --verify still validates the player's game source. Its exit
 # code is authoritative; log creation is not required for this packaging check.
