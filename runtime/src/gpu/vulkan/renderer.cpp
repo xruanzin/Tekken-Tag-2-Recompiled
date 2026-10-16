@@ -5,6 +5,7 @@
 
 #include "gpu/vulkan/png.h"
 #include "host/window.h"
+#include "host/platform.h"
 
 #include "cafe/runtime.h"
 
@@ -28,7 +29,43 @@ double now_seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-constexpr VkDeviceSize kRingSize = 256ull << 20;
+constexpr VkDeviceSize kMiB = 1ull << 20;
+constexpr VkDeviceSize kGiB = 1ull << 30;
+
+VkDeviceSize adaptive_upload_ring_size(const Context& ctx) {
+    const uint64_t total = host::system_memory_total_bytes();
+    const uint64_t available = host::system_memory_available_bytes();
+
+    VkDeviceSize target = 192ull * kMiB;
+    if (total >= 12ull * kGiB) target = 256ull * kMiB;
+    if (total >= 16ull * kGiB) target = 384ull * kMiB;
+    if (total >= 24ull * kGiB) target = 512ull * kMiB;
+    if (total >= 48ull * kGiB) target = 768ull * kMiB;
+
+    // Integrated GPUs share system memory. Give them a healthy staging ring
+    // without stealing so much RAM that the title or the driver starts paging.
+    if (ctx.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        target = std::min<VkDeviceSize>(target, 384ull * kMiB);
+    }
+
+    // Never consume more than roughly one eighth of currently available RAM.
+    if (available != 0) {
+        const VkDeviceSize pressure_cap =
+            std::max<VkDeviceSize>(128ull * kMiB, (available / 8 / (32ull * kMiB)) * (32ull * kMiB));
+        target = std::min(target, pressure_cap);
+    }
+    return std::clamp<VkDeviceSize>(target, 128ull * kMiB, 768ull * kMiB);
+}
+
+uint64_t device_local_heap_bytes(const Context& ctx) {
+    uint64_t bytes = 0;
+    for (uint32_t i = 0; i < ctx.memory.memoryHeapCount; ++i) {
+        if (ctx.memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            bytes += ctx.memory.memoryHeaps[i].size;
+        }
+    }
+    return bytes;
+}
 
 } // namespace
 
@@ -45,7 +82,23 @@ Renderer::Renderer() {
     }
     init_formats(ctx_.physical);
     guest_.init(ctx_);
-    ring_.init(ctx_, kRingSize);
+    const VkDeviceSize upload_ring_size = adaptive_upload_ring_size(ctx_);
+    ring_.init(ctx_, upload_ring_size);
+    {
+        const uint64_t total = host::system_memory_total_bytes();
+        const uint64_t available = host::system_memory_available_bytes();
+        const uint64_t local_heap = device_local_heap_bytes(ctx_);
+        char memory_info[320]{};
+        std::snprintf(memory_info, sizeof(memory_info),
+                      "MEMORY policy=automatic system_total=%lluMB system_available=%lluMB "
+                      "device_local=%lluMB upload_ring=%lluMB gpu_type=%u",
+                      static_cast<unsigned long long>(total >> 20),
+                      static_cast<unsigned long long>(available >> 20),
+                      static_cast<unsigned long long>(local_heap >> 20),
+                      static_cast<unsigned long long>(upload_ring_size >> 20),
+                      static_cast<unsigned>(ctx_.properties.deviceType));
+        cafe::diagnostic_trace(memory_info);
+    }
     VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VK_CHECK(vkCreateSemaphore(ctx_.device, &sci, nullptr, &acquired_));
 
