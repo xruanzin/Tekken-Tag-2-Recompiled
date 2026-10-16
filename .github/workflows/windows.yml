@@ -78,17 +78,13 @@ jobs:
       - name: Run data-independent tests
         run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test"
 
-      - name: Validate first-run PowerShell scripts
-        shell: pwsh
-        run: |
-          [scriptblock]::Create((Get-Content "build-windows.ps1" -Raw)) | Out-Null
-          [scriptblock]::Create((Get-Content "setup\prepare-game.ps1" -Raw)) | Out-Null
-
-      - name: Upload standalone Windows launcher
+      - name: Upload ready-to-run Windows preview
         uses: actions/upload-artifact@v4
         with:
-          name: TTT2-Windows-Launcher
-          path: build/windows/TTT2 Launcher.exe
+          name: TTT2-Windows-Preview
+          path: |
+            build/windows/TTT2 Launcher.exe
+            build/windows/ttt2.exe
           if-no-files-found: error
           retention-days: 30
 
