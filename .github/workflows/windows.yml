@@ -70,13 +70,14 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DTTT2_EXPERIMENTAL_DYNAMIC_HOST=ON `
             -DTTT2_WINDOWS_RESOURCE="$env:TTT2_WINDOWS_RESOURCE"
 
       - name: Compile host runtime, generic game host, tools and launcher
         run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-shader ttt2_dynamic ttt2_launcher ttt2_play title_test memory_model_test wua_layers_test dynamic_semantics_test
 
       - name: Run data-independent tests
-        run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test"
+        run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test|dynamic_semantics_test"
 
       - name: Stage GOW3-style Windows preview
         shell: pwsh
