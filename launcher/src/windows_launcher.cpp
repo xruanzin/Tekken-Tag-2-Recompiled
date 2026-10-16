@@ -248,6 +248,7 @@ std::array<HWND, kPageCount> g_nav{};
 Page g_page = kHome;
 Config g_cfg;
 fs::path g_root, g_ini, g_exe;
+std::wstring g_verified_game;
 
 HFONT g_font = nullptr, g_small = nullptr, g_title = nullptr, g_nav_font = nullptr;
 HBRUSH g_bg_brush = nullptr, g_panel_brush = nullptr, g_edit_brush = nullptr;
@@ -686,6 +687,45 @@ void apply_environment() {
     set_env(L"TTT2_FAST_PIPELINES", L"");
     set_env(L"TTT2_TEXTURE_CACHE", L"1");
     set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
+}
+
+bool verify_game_source(const fs::path& game, bool show_error) {
+    if (!valid_game(game) || g_exe.empty()) return false;
+
+    apply_environment();
+    std::wstring command = L"\"" + g_exe.wstring() + L"\" --verify \"" + game.wstring() + L"\"";
+    std::vector<wchar_t> mutable_command(command.begin(), command.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    const std::wstring working = g_exe.parent_path().wstring();
+    const BOOL ok = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
+                                   CREATE_NO_WINDOW, nullptr, working.c_str(), &startup, &process);
+    if (!ok) {
+        if (show_error) {
+            MessageBoxW(g_main, L"Could not validate the selected game source.",
+                        L"Tekken Tag Tournament 2", MB_ICONERROR | MB_OK);
+        }
+        return false;
+    }
+    CloseHandle(process.hThread);
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+
+    if (exit_code == 0) {
+        g_verified_game = game.wstring();
+        return true;
+    }
+    if (show_error) {
+        MessageBoxW(g_main,
+                    L"The selected game is not the supported European v16 build. See user\\last_run.log for details.",
+                    L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
+    }
+    return false;
 }
 
 bool launch_game(bool wait_for_exit = false) {
@@ -1233,9 +1273,11 @@ void handle_browse() {
     if (!chosen) return;
     g_cfg.game = *chosen;
     SetWindowTextW(g_game_edit, g_cfg.game.c_str());
+    save_config();
+    const bool recognized = verify_game_source(g_cfg.game, true);
     if (g_setup_status) {
         SetWindowTextW(g_setup_status,
-                       valid_game(g_cfg.game) ? ready_game_text() : select_game_play_text());
+                       recognized ? ready_game_text() : select_game_play_text());
     }
 }
 
