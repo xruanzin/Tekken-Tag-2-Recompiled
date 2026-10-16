@@ -8,12 +8,17 @@ target_compile_features(cafe_rpx PUBLIC cxx_std_20)
 target_link_libraries(cafe_rpx PUBLIC ZLIB::ZLIB)
 ttt2_warnings(cafe_rpx)
 
+# Decoder is also used by the zero-install dynamic Windows host.
+add_library(cafe_ppc_decode STATIC src/ppc.cpp)
+target_include_directories(cafe_ppc_decode PUBLIC src)
+target_compile_features(cafe_ppc_decode PUBLIC cxx_std_20)
+ttt2_warnings(cafe_ppc_decode)
+
 add_library(cafe_recomp STATIC
-    src/ppc.cpp
     src/function_table.cpp
     src/program.cpp
     src/codegen.cpp)
-target_link_libraries(cafe_recomp PUBLIC cafe_rpx)
+target_link_libraries(cafe_recomp PUBLIC cafe_rpx cafe_ppc_decode)
 ttt2_warnings(cafe_recomp)
 
 add_executable(cafe-census src/census.cpp)
