@@ -577,7 +577,7 @@ void Renderer::swap() {
     // Windows, where a crash/Alt-F4 shortly after entering a new stage used
     // to lose all newly learned driver pipelines.
     static double last_cache_save = t;
-    if (new_pipelines_ != 0 && t - last_cache_save >= 2.0) {
+    if (new_pipelines_.load(std::memory_order_acquire) != 0 && t - last_cache_save >= 2.0) {
         save_pipeline_cache();
         last_cache_save = t;
     }
