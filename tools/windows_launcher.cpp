@@ -314,7 +314,7 @@ fs::path find_theme_image() {
 }
 
 void load_theme_image() {
-    HRSRC resource = FindResourceW(g_instance, MAKEINTRESOURCEW(101), RT_RCDATA);
+    HRSRC resource = FindResourceW(g_instance, MAKEINTRESOURCEW(101), MAKEINTRESOURCEW(10));
     if (resource) {
         const DWORD size = SizeofResource(g_instance, resource);
         HGLOBAL loaded = LoadResource(g_instance, resource);
