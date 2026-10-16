@@ -18,11 +18,114 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 
 namespace cafe {
 namespace {
 
 thread_local PPCContext* t_current = nullptr;
+
+#ifdef _WIN32
+std::filesystem::path diagnostic_directory() {
+    std::wstring user(32768, L'\0');
+    const DWORD length =
+        GetEnvironmentVariableW(L"TTT2_USER_DIR", user.data(), static_cast<DWORD>(user.size()));
+    if (length != 0 && length < user.size()) {
+        user.resize(length);
+        return std::filesystem::path(user);
+    }
+
+    std::wstring cwd(32768, L'\0');
+    const DWORD cwd_length = GetCurrentDirectoryW(static_cast<DWORD>(cwd.size()), cwd.data());
+    if (cwd_length != 0 && cwd_length < cwd.size()) {
+        cwd.resize(cwd_length);
+        return std::filesystem::path(cwd);
+    }
+    return {};
+}
+
+void write_raw_trace_file(const wchar_t* filename, const char* category, const char* text,
+                          bool truncate = false) {
+    const std::filesystem::path directory = diagnostic_directory();
+    if (directory.empty()) return;
+    CreateDirectoryW(directory.c_str(), nullptr);
+
+    const std::filesystem::path path = directory / filename;
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              truncate ? CREATE_ALWAYS : OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    char line[4096]{};
+    const int count = std::snprintf(
+        line, sizeof(line), "%04u-%02u-%02u %02u:%02u:%02u.%03u [pid=%lu tid=%lu] %-6s %s\r\n",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
+        now.wMilliseconds, static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()), category ? category : "TRACE",
+        text ? text : "");
+    if (count > 0) {
+        DWORD written = 0;
+        WriteFile(file, line, static_cast<DWORD>(std::min<int>(count, sizeof(line) - 1)),
+                  &written, nullptr);
+        FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+}
+
+void write_raw_crash(EXCEPTION_POINTERS* exception, uintptr_t fault_address, uintptr_t pc) {
+    const DWORD code = exception->ExceptionRecord->ExceptionCode;
+    char message[2048]{};
+#if defined(_M_X64) || defined(__x86_64__)
+    const CONTEXT* context = exception->ContextRecord;
+    std::snprintf(
+        message, sizeof(message),
+        "exception=0x%08lX exception_address=%p fault_address=%p rip=%p rsp=%p rbp=%p "
+        "rax=%p rbx=%p rcx=%p rdx=%p",
+        static_cast<unsigned long>(code),
+        exception->ExceptionRecord->ExceptionAddress,
+        reinterpret_cast<void*>(fault_address),
+        reinterpret_cast<void*>(pc),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(context->Rsp)),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(context->Rbp)),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(context->Rax)),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(context->Rbx)),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(context->Rcx)),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(context->Rdx)));
+#else
+    std::snprintf(message, sizeof(message),
+                  "exception=0x%08lX exception_address=%p fault_address=%p pc=%p",
+                  static_cast<unsigned long>(code),
+                  exception->ExceptionRecord->ExceptionAddress,
+                  reinterpret_cast<void*>(fault_address),
+                  reinterpret_cast<void*>(pc));
+#endif
+    write_raw_trace_file(L"crash_trace.log", "CRASH", message, true);
+    write_raw_trace_file(L"boot_trace.log", "CRASH", message);
+
+    MEMORY_BASIC_INFORMATION memory{};
+    if (VirtualQuery(reinterpret_cast<void*>(pc), &memory, sizeof(memory)) != 0 &&
+        memory.AllocationBase != nullptr) {
+        wchar_t module_path[MAX_PATH]{};
+        const HMODULE module = static_cast<HMODULE>(memory.AllocationBase);
+        const DWORD module_length = GetModuleFileNameW(module, module_path, MAX_PATH);
+        if (module_length != 0) {
+            char module_utf8[2048]{};
+            WideCharToMultiByte(CP_UTF8, 0, module_path, -1, module_utf8,
+                                static_cast<int>(sizeof(module_utf8)), nullptr, nullptr);
+            char where[3072]{};
+            std::snprintf(where, sizeof(where), "module=%s+0x%llX", module_utf8,
+                          static_cast<unsigned long long>(
+                              pc - reinterpret_cast<uintptr_t>(memory.AllocationBase)));
+            write_raw_trace_file(L"crash_trace.log", "CRASH", where);
+            write_raw_trace_file(L"boot_trace.log", "CRASH", where);
+        }
+    }
+}
+#endif
 
 void print_backtrace(const PPCContext& ctx) {
     std::fprintf(stderr, "guest backtrace (LR, then saved return addresses):\n");
@@ -80,7 +183,9 @@ LONG WINAPI fault_handler(EXCEPTION_POINTERS* exception) {
 #else
     const uintptr_t pc = reinterpret_cast<uintptr_t>(exception->ExceptionRecord->ExceptionAddress);
 #endif
+    write_raw_crash(exception, address, pc);
     report_fault(address, pc, code);
+    std::fflush(stderr);
     std::_Exit(70);
 }
 #else
@@ -96,6 +201,30 @@ void fault_handler(int signal, siginfo_t* info, void* context) {
 
 PPCContext* current_context() { return t_current; }
 void set_current_context(PPCContext* ctx) { t_current = ctx; }
+
+void begin_diagnostic_trace() {
+#ifdef _WIN32
+    write_raw_trace_file(L"boot_trace.log", "BOOT", "trace started", true);
+    // Clear the previous crash file so a stale crash cannot be mistaken for
+    // the current run.
+    const std::filesystem::path directory = diagnostic_directory();
+    if (!directory.empty()) {
+        DeleteFileW((directory / L"crash_trace.log").c_str());
+    }
+#else
+    std::fprintf(stderr, "ttt2: diagnostic trace started\n");
+    std::fflush(stderr);
+#endif
+}
+
+void diagnostic_trace(const char* stage) {
+#ifdef _WIN32
+    write_raw_trace_file(L"boot_trace.log", "BOOT", stage);
+#else
+    std::fprintf(stderr, "ttt2: boot trace: %s\n", stage ? stage : "");
+    std::fflush(stderr);
+#endif
+}
 
 void print_guest_state(const PPCContext& ctx) {
     for (int i = 0; i < 32; i += 4) {
@@ -124,6 +253,7 @@ void fatal(const char* format, ...) {
 void install_fault_handler() {
 #ifdef _WIN32
     SetUnhandledExceptionFilter(fault_handler);
+    diagnostic_trace("fault handler installed");
 #else
     static char alternate_stack[64 * 1024];
     stack_t stack{};
