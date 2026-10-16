@@ -67,36 +67,47 @@ the same hash before ahead-of-time recompilation.
 
 ## Releases
 
-The [GitHub Releases](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/releases) page provides
-the complete **ready-to-run Windows package**.
+The Windows package follows the same user-facing model as the God of War III Windows port:
+the player downloads one complete ZIP, selects their own game files in the launcher and presses
+PLAY. No local C++ build toolchain is required.
 
-For a new installation, download `TTT2-Windows-<version>.zip`. It contains:
+A packaged installation is laid out as:
 
-- `TTT2 Launcher.exe`;
-- the generic `ttt2.exe` Windows host;
-- the project README and license.
+```text
+ttt2-windows/
+├─ Tekken Tag Tournament 2.exe
+├─ Play Tekken Tag Tournament 2.exe
+├─ bin/
+│  └─ ttt2-runtime.exe
+├─ user/
+└─ README-Windows.txt
+```
 
-The generic `ttt2.exe` does **not** contain Tekken game files or precompiled Tekken game code.
-The user's own supported EU v16 game is selected from the launcher and validated at run time.
+- **Tekken Tag Tournament 2.exe** is the main launcher and remembers the selected game source
+  and graphics/game settings.
+- **Play Tekken Tag Tournament 2.exe** starts directly with the saved settings, suitable for a
+  desktop shortcut or a non-Steam shortcut.
+- **bin/ttt2-runtime.exe** is the prebuilt generic Windows runtime. It contains no Tekken game
+  files and does not require `cafe-recomp`, CMake or Clang on the player's PC.
+- **user/** holds saves, caches and `last_run.log`.
 
-The standalone launcher and host executables are also attached separately to releases for users
-updating an existing installation.
+The supported game remains the legally obtained European v16 build. The launcher can point at
+the extracted `code/content/meta` layout or a supported `.wua`.
+
+Unlike the PS4 God of War III executable, Wii U TTT2 contains PowerPC code rather than x86-64
+code. Therefore the generic runtime must translate PowerPC code to the Windows host internally;
+the public package cannot simply execute the original RPX instructions directly on an x86-64
+CPU.
 
 ## First run
 
-There is no first-run C++ compilation.
-
-1. Extract the complete Windows release ZIP.
-2. Open `TTT2 Launcher.exe`.
-3. Choose the game source: either the supported extracted game folder or a supported `.wua`.
+1. Extract the complete Windows ZIP.
+2. Open `Tekken Tag Tournament 2.exe`.
+3. Select the supported EU v16 game folder or `.wua`.
 4. Click **PLAY / JOGAR**.
 
-No Git, CMake, Ninja, LLVM/Clang, Python or Visual Studio Build Tools are required to play the
-release build. No PowerShell or build terminal is launched.
-
-Runtime diagnostics are written to `logs/ttt2-last-run.txt` beside the selected game source
-(or inside the selected extracted game folder). Shader, pipeline and texture caches continue to
-be reused between runs.
+On later starts, `Play Tekken Tag Tournament 2.exe` skips the launcher window and uses the
+saved settings. Player-created data stays under `user/`, including `user/last_run.log`.
 
 ## Quick start on Windows
 
