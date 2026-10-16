@@ -151,19 +151,38 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 2;
     }
-    redirect_runtime_log(game);
+    begin_diagnostic_trace();
+    diagnostic_trace(verify_only ? "mode=verify" : "mode=run");
     install_fault_handler();
+
+    diagnostic_trace("redirect_runtime_log: begin");
+    redirect_runtime_log(game);
+    diagnostic_trace("redirect_runtime_log: complete");
+
+    diagnostic_trace("vfs::open_game: begin");
     vfs::open_game(game);
+    diagnostic_trace("vfs::open_game: complete");
+    diagnostic_trace("save root: begin");
     if (const char* save = std::getenv("TTT2_SAVE_DIR")) {
         vfs::set_save_root(save);
     } else {
         vfs::set_save_root(host::data_directory() / "ttt2" / "save");
     }
+    diagnostic_trace("save root: complete");
+
+    diagnostic_trace("read /vol/code/Tekken.rpx: begin");
     const auto rpx = vfs::read_whole("/vol/code/Tekken.rpx");
     if (!rpx) fatal("the game source has no code/Tekken.rpx");
+    {
+        char marker[128]{};
+        std::snprintf(marker, sizeof(marker), "read Tekken.rpx: complete (%zu bytes)", rpx->size());
+        diagnostic_trace(marker);
+    }
 
     if (verify_only) {
+        diagnostic_trace("verify: sha256 begin");
         const std::string digest = sha256_hex(*rpx);
+        diagnostic_trace("verify: sha256 complete");
         if (digest != cafe_program_info.rpx_sha256) {
             std::fprintf(stderr,
                          "ttt2: unsupported game executable\n"
@@ -192,23 +211,52 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "ttt2: invalid Tekken.rpx: %s\n", error.what());
             return 4;
         }
+        diagnostic_trace("verify: success");
         return 0;
     }
 
+    diagnostic_trace("reserve_guest_memory: begin");
     reserve_guest_memory();
+    diagnostic_trace("reserve_guest_memory: complete");
+
+    diagnostic_trace("init_system_heap: begin");
     init_system_heap();
+    diagnostic_trace("init_system_heap: complete");
+
+    diagnostic_trace("load_image: begin");
     const LoadedImage image = load_image(*rpx);
-    if (cafe_program_info.compiled_entries == 0) {
-        dynamic::initialize(*rpx);
+    {
+        char marker[192]{};
+        std::snprintf(marker, sizeof(marker),
+                      "load_image: complete entry=0x%08X stack=0x%X data_end=0x%08X",
+                      image.entry_point, image.stack_size, image.data_end);
+        diagnostic_trace(marker);
     }
+    if (cafe_program_info.compiled_entries == 0) {
+        diagnostic_trace("dynamic::initialize: begin");
+        dynamic::initialize(*rpx);
+        diagnostic_trace("dynamic::initialize: complete");
+    }
+
+    diagnostic_trace("build_dispatch_table: begin");
     build_dispatch_table();
+    diagnostic_trace("build_dispatch_table: complete");
+
+    diagnostic_trace("os::init_heaps: begin");
     os::init_heaps(image.data_end);
+    diagnostic_trace("os::init_heaps: complete");
+
+    diagnostic_trace("data imports: begin");
     if (dynamic::enabled()) {
         dynamic::initialize_data_imports();
     } else {
         init_data_imports();
     }
+    diagnostic_trace("data imports: complete");
+
+    diagnostic_trace("title::prepare_presentation: begin");
     title::prepare_presentation();
+    diagnostic_trace("title::prepare_presentation: complete");
     if (dynamic::enabled()) {
         std::fprintf(stderr, "ttt2: loaded image, entry 0x%08X, dynamic zero-install execution enabled\n",
                      image.entry_point);
@@ -219,16 +267,30 @@ int main(int argc, char** argv) {
     }
 
     // argv[0] is the executable name, as the Cafe loader passes it.
+    diagnostic_trace("guest argv: begin");
     const uint32_t guest_argv = system_alloc(8);
     *reinterpret_cast<uint32_t*>(guest_pointer(guest_argv)) = __builtin_bswap32(guest_strdup("Tekken.rpx"));
+    diagnostic_trace("guest argv: complete");
+
     const auto run = [&] {
-        return os::run_main_thread(image.entry_point, 1, guest_argv, image.stack_size, image.sda_base,
-                                   image.sda2_base);
+        diagnostic_trace("os::run_main_thread: entered");
+        const int code =
+            os::run_main_thread(image.entry_point, 1, guest_argv, image.stack_size,
+                                image.sda_base, image.sda2_base);
+        char marker[96]{};
+        std::snprintf(marker, sizeof(marker), "os::run_main_thread: returned %d", code);
+        diagnostic_trace(marker);
+        return code;
     };
     // The window's event loop needs the process's main thread; the title
     // runs beside it. TTT2_GPU=null runs headless.
     const char* gpu = std::getenv("TTT2_GPU");
-    const bool headless = (gpu && std::strcmp(gpu, "null") == 0) || !host::open_window("Tekken Tag Tournament 2");
+    diagnostic_trace("host::open_window: begin");
+    const bool headless =
+        (gpu && std::strcmp(gpu, "null") == 0) ||
+        !host::open_window("Tekken Tag Tournament 2");
+    diagnostic_trace(headless ? "host::open_window: headless/failed" :
+                                "host::open_window: complete");
     if (!headless) {
         std::vector<uint8_t> icon;
         uint32_t width = 0, height = 0;
@@ -236,15 +298,32 @@ int main(int argc, char** argv) {
             host::set_window_icon(icon, width, height);
         }
     }
+    diagnostic_trace("host::open_audio: begin");
     host::open_audio();
-    if (headless) return run();
+    diagnostic_trace("host::open_audio: complete");
+
+    if (headless) {
+        diagnostic_trace("headless: starting guest directly");
+        return run();
+    }
+
     std::atomic<bool> finished{false};
     int result = 0;
+    diagnostic_trace("title thread: create");
     std::thread title([&] {
+        diagnostic_trace("title thread: entered");
         result = run();
         finished = true;
+        diagnostic_trace("title thread: finished");
     });
-    if (!host::run_event_loop([&] { return finished.load(); })) std::_Exit(0); // window closed
+
+    diagnostic_trace("host::run_event_loop: begin");
+    if (!host::run_event_loop([&] { return finished.load(); })) {
+        diagnostic_trace("host::run_event_loop: window closed");
+        std::_Exit(0);
+    }
+    diagnostic_trace("host::run_event_loop: complete");
     title.join();
+    diagnostic_trace("runtime: clean exit");
     return result;
 }
