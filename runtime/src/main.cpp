@@ -96,17 +96,35 @@ void redirect_runtime_log(const std::filesystem::path& game) {
         directory / (std::getenv("TTT2_USER_DIR") ? "last_run.log" : "ttt2-last-run.txt");
 #ifdef _WIN32
     FILE* redirected = nullptr;
+    bool stdout_redirected = false;
     if (_wfreopen_s(&redirected, file.c_str(), L"w", stderr) == 0 && redirected) {
-        _dup2(_fileno(stderr), _fileno(stdout));
+        // CREATE_NO_WINDOW/GUI launches can leave stdout without a valid CRT
+        // descriptor. Calling _dup2 with that negative descriptor invokes the
+        // MSVC invalid-parameter handler, which terminates the process with
+        // 0xC0000409 before the first log line is written.
+        const int stderr_fd = _fileno(stderr);
+        const int stdout_fd = _fileno(stdout);
+        if (stderr_fd >= 0 && stdout_fd >= 0) {
+            stdout_redirected = (_dup2(stderr_fd, stdout_fd) == 0);
+        } else {
+            // Give printf-style diagnostics somewhere to go even when the
+            // launcher created the process without console handles.
+            FILE* redirected_stdout = nullptr;
+            stdout_redirected =
+                (_wfreopen_s(&redirected_stdout, file.c_str(), L"a", stdout) == 0 &&
+                 redirected_stdout != nullptr);
+        }
     }
 #else
+    bool stdout_redirected = false;
     if (std::freopen(file.c_str(), "w", stderr)) {
-        ::dup2(fileno(stderr), fileno(stdout));
+        stdout_redirected = (::dup2(fileno(stderr), fileno(stdout)) >= 0);
     }
 #endif
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
-    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    if (stdout_redirected) std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::fprintf(stderr, "ttt2: runtime log redirected to %s\n", file.string().c_str());
+    std::fflush(stderr);
 }
 
 } // namespace
