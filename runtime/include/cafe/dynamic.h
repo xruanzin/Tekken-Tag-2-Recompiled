@@ -20,4 +20,8 @@ void initialize_data_imports();
 // native runtime.
 void execute(PPCContext& ctx, uint8_t* base, uint32_t entry);
 
+// Prints the current thread's most recent guest instructions. This is kept
+// allocation-free so crash/fatal diagnostics can use it safely.
+void print_recent_trace();
+
 } // namespace cafe::dynamic
