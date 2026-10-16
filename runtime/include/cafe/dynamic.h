@@ -25,6 +25,11 @@ void execute(PPCContext& ctx, uint8_t* base, uint32_t entry);
 uint32_t execute_test_instruction(PPCContext& ctx, uint8_t* base,
                                   uint32_t address, uint32_t word);
 
+// Loads a synthetic contiguous PPC program for game-independent control-flow
+// differential tests.
+void initialize_test_program(uint32_t base_address,
+                             const std::vector<uint32_t>& words);
+
 // Prints the current thread's most recent guest instructions. This is kept
 // allocation-free so crash/fatal diagnostics can use it safely.
 void print_recent_trace();
