@@ -357,20 +357,26 @@ void paint_theme_surface(HDC dc, const RECT& rect, bool page, bool home = false)
     draw_theme_cover(graphics, Gdiplus::Rect(rect.left, rect.top, width, height), page ? 0.78f : 0.68f);
 
     const BYTE shade = page ? (home ? 118 : 176) : 126;
+    const Gdiplus::Rect full(static_cast<INT>(rect.left), static_cast<INT>(rect.top),
+                             static_cast<INT>(width), static_cast<INT>(height));
     Gdiplus::SolidBrush veil(Gdiplus::Color(shade, 4, 7, 12));
-    graphics.FillRectangle(&veil, rect.left, rect.top, width, height);
+    graphics.FillRectangle(&veil, full);
 
     Gdiplus::LinearGradientBrush wash(
-        Gdiplus::Point(rect.left, rect.top),
-        Gdiplus::Point(rect.right, rect.bottom),
+        Gdiplus::Point(static_cast<INT>(rect.left), static_cast<INT>(rect.top)),
+        Gdiplus::Point(static_cast<INT>(rect.right), static_cast<INT>(rect.bottom)),
         Gdiplus::Color(page ? 54 : 42, 196, 18, 36),
         Gdiplus::Color(page ? 52 : 44, 23, 119, 218));
-    graphics.FillRectangle(&wash, rect.left, rect.top, width, height);
+    graphics.FillRectangle(&wash, full);
 
     Gdiplus::SolidBrush red_line(Gdiplus::Color(230, 213, 25, 43));
     Gdiplus::SolidBrush blue_line(Gdiplus::Color(225, 53, 160, 244));
-    graphics.FillRectangle(&red_line, rect.left, rect.top, width / 2, 3);
-    graphics.FillRectangle(&blue_line, rect.left + width / 2, rect.top, width - width / 2, 3);
+    graphics.FillRectangle(&red_line,
+                           Gdiplus::Rect(static_cast<INT>(rect.left), static_cast<INT>(rect.top),
+                                         static_cast<INT>(width / 2), 3));
+    graphics.FillRectangle(&blue_line,
+                           Gdiplus::Rect(static_cast<INT>(rect.left + width / 2), static_cast<INT>(rect.top),
+                                         static_cast<INT>(width - width / 2), 3));
 }
 
 bool valid_game(const fs::path& path) {
