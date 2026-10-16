@@ -124,6 +124,27 @@ This port requires the European v16 executable:
 
 Write-Host "==> RPX verified: European v16"
 
+# Build a Windows .ico from the user's own Wii U icon. The generated .ico/.rc
+# stay under generated/ and are excluded from Git.
+$WindowsResource = $null
+$TitleRoot = Split-Path -Parent (Split-Path -Parent $RpxPath)
+$IconTga = Join-Path $TitleRoot "meta\iconTex.tga"
+if (Test-Path -LiteralPath $IconTga) {
+    $WindowsAssets = Join-Path $Root "generated\windows"
+    New-Item -ItemType Directory -Force $WindowsAssets | Out-Null
+    $WindowsIcon = Join-Path $WindowsAssets "ttt2.ico"
+    $WindowsResource = Join-Path $WindowsAssets "ttt2.rc"
+    Write-Host "==> Generating Windows executable icon from meta\iconTex.tga"
+    & $PythonExe (Join-Path $Root "tools\make_windows_icon.py") $IconTga $WindowsIcon
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows icon generation failed"
+    }
+    $IconForRc = $WindowsIcon.Replace("\", "/")
+    Set-Content -LiteralPath $WindowsResource -Encoding ASCII -Value "1 ICON `"$IconForRc`""
+} else {
+    Write-Warning "meta\iconTex.tga was not found next to the selected RPX; executables will use the default Windows icon."
+}
+
 $BuildPath = Join-Path $Root $BuildDir
 $GeneratedPath = Join-Path $Root $GeneratedDir
 
@@ -210,6 +231,9 @@ $CommonArgs = @(
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain",
     "-DVCPKG_TARGET_TRIPLET=x64-windows-static"
 )
+if ($WindowsResource) {
+    $CommonArgs += "-DTTT2_WINDOWS_RESOURCE=$WindowsResource"
+}
 
 Write-Host "==> Configuring Windows host tools"
 & $CMakeExe @CommonArgs
@@ -242,10 +266,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Final CMake configure failed"
 }
 
-Write-Host "==> Building ttt2.exe"
-& $CMakeExe --build $BuildPath --target ttt2
+Write-Host "==> Building ttt2.exe and Windows launcher"
+& $CMakeExe --build $BuildPath --target ttt2 ttt2_launcher
 if ($LASTEXITCODE -ne 0) {
-    throw "Final ttt2 build failed"
+    throw "Final ttt2/launcher build failed"
 }
 
 $Exe = Join-Path $BuildPath "ttt2.exe"
@@ -253,7 +277,15 @@ if (-not (Test-Path -LiteralPath $Exe)) {
     throw "Build completed but ttt2.exe was not found at $Exe"
 }
 
+$LauncherBuilt = Join-Path $BuildPath "TTT2 Launcher.exe"
+if (-not (Test-Path -LiteralPath $LauncherBuilt)) {
+    throw "Build completed but TTT2 Launcher.exe was not found at $LauncherBuilt"
+}
+$LauncherRoot = Join-Path $Root "TTT2 Launcher.exe"
+Copy-Item -LiteralPath $LauncherBuilt -Destination $LauncherRoot -Force
+
 Write-Host ""
 Write-Host "SUCCESS"
 Write-Host "Executable: $Exe"
-Write-Host "Run it with your own .wua or extracted European v16 title folder."
+Write-Host "Launcher:   $LauncherRoot"
+Write-Host "Run the root launcher, or run ttt2.exe with your own .wua/extracted European v16 title folder."

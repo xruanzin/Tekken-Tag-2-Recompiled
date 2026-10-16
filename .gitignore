@@ -16,3 +16,8 @@ __pycache__/
 *.bfma
 *.h264
 /captures/
+
+
+# Local Windows launcher output/config (generated from the user's own game icon).
+/TTT2 Launcher.exe
+/TTT2 Launcher.ini
