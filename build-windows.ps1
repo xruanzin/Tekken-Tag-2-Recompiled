@@ -146,9 +146,16 @@ if (Test-Path -LiteralPath $IconTga) {
         throw "Windows icon generation failed"
     }
     $IconForRc = $WindowsIcon.Replace("\", "/")
-    Set-Content -LiteralPath $WindowsRc -Encoding ASCII -Value "1 ICON `"$IconForRc`""
+    $ResourceLines = @("1 ICON `"$IconForRc`"")
+    $LauncherTheme = Join-Path $Root "assets\ttt2_launcher_theme.jpg"
+    if (Test-Path -LiteralPath $LauncherTheme) {
+        $ThemeForRc = $LauncherTheme.Replace("\", "/")
+        $ResourceLines += "101 RCDATA `"$ThemeForRc`""
+        Write-Host "==> Embedding launcher artwork"
+    }
+    Set-Content -LiteralPath $WindowsRc -Encoding ASCII -Value $ResourceLines
 
-    Write-Host "==> Compiling Windows icon resource"
+    Write-Host "==> Compiling Windows launcher resources"
     & $LlvmRcExe "/fo" $WindowsResource $WindowsRc
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $WindowsResource)) {
         throw "Windows resource compilation failed"

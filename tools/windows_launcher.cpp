@@ -235,6 +235,7 @@ struct Config {
 HINSTANCE g_instance = nullptr;
 ULONG_PTR g_gdiplus_token = 0;
 std::unique_ptr<Gdiplus::Image> g_theme_image;
+IStream* g_theme_stream = nullptr;
 HWND g_main = nullptr;
 std::array<HWND, kPageCount> g_pages{};
 std::array<HWND, kPageCount> g_nav{};
@@ -313,6 +314,36 @@ fs::path find_theme_image() {
 }
 
 void load_theme_image() {
+    HRSRC resource = FindResourceW(g_instance, MAKEINTRESOURCEW(101), RT_RCDATA);
+    if (resource) {
+        const DWORD size = SizeofResource(g_instance, resource);
+        HGLOBAL loaded = LoadResource(g_instance, resource);
+        const void* bytes = loaded ? LockResource(loaded) : nullptr;
+        if (bytes && size != 0) {
+            HGLOBAL copy = GlobalAlloc(GMEM_MOVEABLE, size);
+            if (copy) {
+                void* dst = GlobalLock(copy);
+                if (dst) {
+                    std::memcpy(dst, bytes, size);
+                    GlobalUnlock(copy);
+                    if (SUCCEEDED(CreateStreamOnHGlobal(copy, TRUE, &g_theme_stream))) {
+                        std::unique_ptr<Gdiplus::Image> image(Gdiplus::Image::FromStream(g_theme_stream, FALSE));
+                        if (image && image->GetLastStatus() == Gdiplus::Ok) {
+                            g_theme_image = std::move(image);
+                            return;
+                        }
+                        g_theme_stream->Release();
+                        g_theme_stream = nullptr;
+                    } else {
+                        GlobalFree(copy);
+                    }
+                } else {
+                    GlobalFree(copy);
+                }
+            }
+        }
+    }
+
     const fs::path path = find_theme_image();
     if (path.empty()) return;
     std::unique_ptr<Gdiplus::Image> image(Gdiplus::Image::FromFile(path.c_str(), FALSE));
@@ -354,29 +385,42 @@ void paint_theme_surface(HDC dc, const RECT& rect, bool page, bool home = false)
     const int height = rect.bottom - rect.top;
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-    draw_theme_cover(graphics, Gdiplus::Rect(rect.left, rect.top, width, height), page ? 0.78f : 0.68f);
 
-    const BYTE shade = page ? (home ? 118 : 176) : 126;
     const Gdiplus::Rect full(static_cast<INT>(rect.left), static_cast<INT>(rect.top),
                              static_cast<INT>(width), static_cast<INT>(height));
-    Gdiplus::SolidBrush veil(Gdiplus::Color(shade, 4, 7, 12));
-    graphics.FillRectangle(&veil, full);
+    Gdiplus::SolidBrush base(Gdiplus::Color(255, 7, 9, 14));
+    graphics.FillRectangle(&base, full);
 
-    Gdiplus::LinearGradientBrush wash(
-        Gdiplus::Point(static_cast<INT>(rect.left), static_cast<INT>(rect.top)),
-        Gdiplus::Point(static_cast<INT>(rect.right), static_cast<INT>(rect.bottom)),
-        Gdiplus::Color(page ? 54 : 42, 196, 18, 36),
-        Gdiplus::Color(page ? 52 : 44, 23, 119, 218));
-    graphics.FillRectangle(&wash, full);
+    if (!page) {
+        // Main shell: artwork is atmospheric, not the focal point.
+        draw_theme_cover(graphics, full, 0.48f);
+        Gdiplus::SolidBrush veil(Gdiplus::Color(150, 4, 7, 12));
+        graphics.FillRectangle(&veil, full);
+    } else if (home) {
+        // Home: show the supplied Tekken artwork clearly in its own 16:9 hero.
+        const Gdiplus::Rect hero(365, 30, 430, 242);
+        Gdiplus::SolidBrush hero_shadow(Gdiplus::Color(180, 0, 0, 0));
+        graphics.FillRectangle(&hero_shadow, Gdiplus::Rect(hero.X + 7, hero.Y + 8, hero.Width, hero.Height));
+        draw_theme_cover(graphics, hero, 1.0f);
+
+        Gdiplus::Pen frame(Gdiplus::Color(220, 190, 198, 210), 1.0f);
+        graphics.DrawRectangle(&frame, hero);
+        Gdiplus::SolidBrush red_edge(Gdiplus::Color(240, 205, 24, 42));
+        Gdiplus::SolidBrush blue_edge(Gdiplus::Color(240, 43, 147, 232));
+        graphics.FillRectangle(&red_edge, Gdiplus::Rect(hero.X, hero.Y, 4, hero.Height));
+        graphics.FillRectangle(&blue_edge, Gdiplus::Rect(hero.X + hero.Width - 4, hero.Y, 4, hero.Height));
+    } else {
+        // Settings pages stay clean and dark so controls are easy to scan.
+        Gdiplus::LinearGradientBrush panel_wash(
+            Gdiplus::Point(0, 0), Gdiplus::Point(width, height),
+            Gdiplus::Color(34, 112, 9, 22), Gdiplus::Color(32, 10, 61, 105));
+        graphics.FillRectangle(&panel_wash, full);
+    }
 
     Gdiplus::SolidBrush red_line(Gdiplus::Color(230, 213, 25, 43));
     Gdiplus::SolidBrush blue_line(Gdiplus::Color(225, 53, 160, 244));
-    graphics.FillRectangle(&red_line,
-                           Gdiplus::Rect(static_cast<INT>(rect.left), static_cast<INT>(rect.top),
-                                         static_cast<INT>(width / 2), 3));
-    graphics.FillRectangle(&blue_line,
-                           Gdiplus::Rect(static_cast<INT>(rect.left + width / 2), static_cast<INT>(rect.top),
-                                         static_cast<INT>(width - width / 2), 3));
+    graphics.FillRectangle(&red_line, Gdiplus::Rect(rect.left, rect.top, width / 2, 3));
+    graphics.FillRectangle(&blue_line, Gdiplus::Rect(rect.left + width / 2, rect.top, width - width / 2, 3));
 }
 
 bool valid_game(const fs::path& path) {
@@ -782,26 +826,31 @@ void label(HWND page, const wchar_t* text, int x, int y, int w = 260) {
 
 void create_home() {
     HWND page = g_pages[kHome] = page_window();
-    page_heading(page, tr(T_HOME_TITLE), tr(T_HOME_DESC));
 
-    label(page, tr(T_GAME_SOURCE), 24, 110);
+    make_static(page, tr(T_HOME_TITLE), 24, 22, 315, 38, g_title);
+    make_static(page, tr(T_HOME_DESC), 24, 63, 315, 38, g_small);
+
+    label(page, tr(T_GAME_SOURCE), 24, 118, 300);
     g_game_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", g_cfg.game.wstring().c_str(),
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                  24, 138, 610, 34, page, reinterpret_cast<HMENU>(ID_GAME_PATH), g_instance, nullptr);
+                                  24, 146, 230, 34, page, reinterpret_cast<HMENU>(ID_GAME_PATH), g_instance, nullptr);
     font(g_game_edit, g_font);
     dark_control(g_game_edit);
-    make_button(page, ID_BROWSE, tr(T_BROWSE), 650, 138, 130, 34, true);
+    make_button(page, ID_BROWSE, tr(T_BROWSE), 263, 146, 80, 34, true);
 
-    label(page, tr(T_PRESET), 24, 205);
-    g_preset = make_combo(page, ID_PRESET, 24, 233, 280,
+    label(page, tr(T_PRESET), 24, 207, 300);
+    g_preset = make_combo(page, ID_PRESET, 24, 235, 319,
                           {L"Custom", L"Performance", L"Balanced", L"Quality", L"Ultra"}, g_cfg.preset);
 
-    make_static(page, L"VULKAN 1.3", 24, 310, 180, 26, g_nav_font);
-    make_static(page, L"NATIVE RECOMPILATION  •  60 / 120 / 180 / 240 FPS", 24, 340, 520, 24, g_small);
+    make_static(page, L"VULKAN 1.3", 24, 304, 180, 26, g_nav_font);
+    make_static(page, L"NATIVE RECOMPILATION", 24, 333, 260, 24, g_small);
 
-    make_button(page, ID_PLAY, tr(T_PLAY), 24, 410, 250, 58, true);
-    make_button(page, ID_SAVE, tr(T_SAVE), 292, 420, 150, 42, true);
-    make_button(page, ID_RESET, tr(T_RESET), 458, 420, 190, 42, true);
+    make_button(page, ID_PLAY, tr(T_PLAY), 24, 378, 319, 58, true);
+    make_button(page, ID_SAVE, tr(T_SAVE), 24, 452, 150, 42, true);
+    make_button(page, ID_RESET, tr(T_RESET), 185, 452, 158, 42, true);
+
+    make_static(page, L"60 / 120 / 180 / 240 FPS", 395, 296, 330, 26, g_nav_font);
+    make_static(page, L"FSR 1  •  ASYNC SHADERS  •  LOW LATENCY", 395, 327, 360, 24, g_small);
 }
 
 void create_display() {
@@ -1235,6 +1284,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     DeleteObject(g_panel_brush);
     DeleteObject(g_edit_brush);
     g_theme_image.reset();
+    if (g_theme_stream) {
+        g_theme_stream->Release();
+        g_theme_stream = nullptr;
+    }
     if (g_gdiplus_token) Gdiplus::GdiplusShutdown(g_gdiplus_token);
     CoUninitialize();
     return result;
