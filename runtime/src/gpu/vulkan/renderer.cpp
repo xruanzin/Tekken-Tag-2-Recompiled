@@ -81,15 +81,22 @@ Renderer::Renderer() {
         shader_compile_thread_ = std::thread([this] { shader_worker_main(); });
     }
     load_pipeline_cache();
-    async_pipelines_ = async_shaders_;
+    // Pipeline creation is a separate expensive driver operation. Keep it
+    // away from the render thread even when shaderc itself is synchronous.
+    async_pipelines_ = true;
     if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
         async_pipelines_ = *value != '\0' && *value != '0';
+    }
+    fast_pipelines_ = true;
+    if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
+        fast_pipelines_ = *value != '\0' && *value != '0';
     }
     if (const char* value = std::getenv("TTT2_NATIVE_EFFECT_BUFFERS")) {
         native_effect_buffers_ = *value != '\0' && *value != '0';
     }
     if (async_pipelines_) {
-        std::fprintf(stderr, "ttt2: GPU: asynchronous Vulkan pipeline compilation enabled\n");
+        std::fprintf(stderr, "ttt2: GPU: asynchronous Vulkan pipeline compilation enabled%s\n",
+                     fast_pipelines_ ? " (fast-create)" : "");
         pipeline_compile_thread_ = std::thread([this] { pipeline_worker_main(); });
     }
     if (native_effect_buffers_ && scale_ > 1) {

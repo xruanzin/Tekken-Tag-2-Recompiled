@@ -459,7 +459,8 @@ private:
         bool depth_clamp = false;
     };
     void pipeline_worker_main();
-    bool async_pipelines_ = false;
+    bool async_pipelines_ = true;
+    bool fast_pipelines_ = true;
     bool pipeline_pending_ = false;
     bool pipeline_compile_stop_ = false;
     std::mutex pipeline_compile_mutex_;

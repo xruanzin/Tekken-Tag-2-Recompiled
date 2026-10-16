@@ -238,6 +238,7 @@ ULONG_PTR g_gdiplus_token = 0;
 std::unique_ptr<Gdiplus::Image> g_theme_image;
 IStream* g_theme_stream = nullptr;
 HWND g_main = nullptr;
+HWND g_home_art = nullptr;
 std::array<HWND, kPageCount> g_pages{};
 std::array<HWND, kPageCount> g_nav{};
 Page g_page = kHome;
@@ -398,18 +399,10 @@ void paint_theme_surface(HDC dc, const RECT& rect, bool page, bool home = false)
         Gdiplus::SolidBrush veil(Gdiplus::Color(150, 4, 7, 12));
         graphics.FillRectangle(&veil, full);
     } else if (home) {
-        // Home: show the supplied Tekken artwork clearly in its own 16:9 hero.
-        const Gdiplus::Rect hero(365, 30, 430, 242);
-        Gdiplus::SolidBrush hero_shadow(Gdiplus::Color(180, 0, 0, 0));
-        graphics.FillRectangle(&hero_shadow, Gdiplus::Rect(hero.X + 7, hero.Y + 8, hero.Width, hero.Height));
-        draw_theme_cover(graphics, hero, 1.0f);
-
-        Gdiplus::Pen frame(Gdiplus::Color(220, 190, 198, 210), 1.0f);
-        graphics.DrawRectangle(&frame, hero);
-        Gdiplus::SolidBrush red_edge(Gdiplus::Color(240, 205, 24, 42));
-        Gdiplus::SolidBrush blue_edge(Gdiplus::Color(240, 43, 147, 232));
-        graphics.FillRectangle(&red_edge, Gdiplus::Rect(hero.X, hero.Y, 4, hero.Height));
-        graphics.FillRectangle(&blue_edge, Gdiplus::Rect(hero.X + hero.Width - 4, hero.Y, 4, hero.Height));
+        Gdiplus::LinearGradientBrush home_wash(
+            Gdiplus::Point(0, 0), Gdiplus::Point(width, height),
+            Gdiplus::Color(28, 94, 8, 19), Gdiplus::Color(24, 8, 45, 79));
+        graphics.FillRectangle(&home_wash, full);
     } else {
         // Settings pages stay clean and dark so controls are easy to scan.
         Gdiplus::LinearGradientBrush panel_wash(
@@ -609,7 +602,8 @@ void apply_environment() {
     set_env(L"TTT2_AUDIO_VOLUME", std::to_wstring(g_cfg.volume));
     set_env(L"TTT2_REDUCE_INPUT_LAG", g_cfg.reduce_input_lag ? L"1" : L"");
     set_env(L"TTT2_ASYNC_SHADERS", g_cfg.async_shaders ? L"1" : L"0");
-    set_env(L"TTT2_ASYNC_PIPELINES", g_cfg.async_shaders ? L"1" : L"0");
+    set_env(L"TTT2_ASYNC_PIPELINES", L"1");
+    set_env(L"TTT2_FAST_PIPELINES", L"1");
     set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
 }
 
@@ -783,7 +777,42 @@ void show_page(Page page) {
     g_page = page;
     for (int i = 0; i < kPageCount; ++i) {
         ShowWindow(g_pages[i], i == page ? SW_SHOW : SW_HIDE);
+        if (i == page) InvalidateRect(g_pages[i], nullptr, TRUE);
         InvalidateRect(g_nav[i], nullptr, TRUE);
+    }
+    if (page == kHome && g_home_art) InvalidateRect(g_home_art, nullptr, TRUE);
+}
+
+LRESULT CALLBACK art_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        const Gdiplus::Rect full(0, 0, std::max(1L, rc.right), std::max(1L, rc.bottom));
+        Gdiplus::SolidBrush base(Gdiplus::Color(255, 7, 9, 14));
+        graphics.FillRectangle(&base, full);
+        if (g_theme_image) {
+            draw_theme_cover(graphics,
+                             Gdiplus::Rect(4, 4, std::max(1, full.Width - 8), std::max(1, full.Height - 8)),
+                             1.0f);
+        }
+        Gdiplus::Pen frame(Gdiplus::Color(235, 196, 205, 220), 1.0f);
+        graphics.DrawRectangle(&frame, Gdiplus::Rect(1, 1, std::max(1, full.Width - 3), std::max(1, full.Height - 3)));
+        Gdiplus::SolidBrush red(Gdiplus::Color(245, 209, 24, 43));
+        Gdiplus::SolidBrush blue(Gdiplus::Color(245, 43, 147, 232));
+        graphics.FillRectangle(&red, Gdiplus::Rect(1, 1, 4, std::max(1, full.Height - 2)));
+        graphics.FillRectangle(&blue, Gdiplus::Rect(std::max(1, full.Width - 5), 1, 4, std::max(1, full.Height - 2)));
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    default:
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
 }
 
@@ -829,6 +858,10 @@ void label(HWND page, const wchar_t* text, int x, int y, int w = 260) {
 
 void create_home() {
     HWND page = g_pages[kHome] = page_window();
+
+    g_home_art = CreateWindowExW(0, L"TTT2LauncherArt", L"",
+                                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+                                 365, 28, 430, 244, page, nullptr, g_instance, nullptr);
 
     make_static(page, tr(T_HOME_TITLE), 24, 22, 315, 38, g_title);
     make_static(page, tr(T_HOME_DESC), 24, 63, 315, 38, g_small);
@@ -950,6 +983,7 @@ void destroy_pages() {
         if (page) DestroyWindow(page);
         page = nullptr;
     }
+    g_home_art = nullptr;
     g_game_edit = g_preset = nullptr;
     g_display_mode = g_output_res = g_fps = g_fill = nullptr;
     g_render_scale = g_aa = g_upscaler = g_aniso = g_sharpen = g_sharpen_value = g_async_shaders = nullptr;
@@ -1199,6 +1233,14 @@ void create_nav() {
 bool init_window() {
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
+
+    WNDCLASSEXW art_class{sizeof(art_class)};
+    art_class.lpfnWndProc = art_proc;
+    art_class.hInstance = g_instance;
+    art_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    art_class.hbrBackground = g_bg_brush;
+    art_class.lpszClassName = L"TTT2LauncherArt";
+    if (!RegisterClassExW(&art_class)) return false;
 
     WNDCLASSEXW page_class{sizeof(page_class)};
     page_class.lpfnWndProc = page_proc;

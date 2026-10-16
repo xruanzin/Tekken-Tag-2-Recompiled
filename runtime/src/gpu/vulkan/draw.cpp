@@ -508,6 +508,7 @@ void Renderer::pipeline_worker_main() {
         ri.stencilAttachmentFormat = has_stencil(task.depth) ? task.depth : VK_FORMAT_UNDEFINED;
 
         VkGraphicsPipelineCreateInfo gci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        if (fast_pipelines_) gci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         gci.pNext = &ri;
         gci.stageCount = 2;
         gci.pStages = stages;
@@ -712,6 +713,7 @@ const Pipeline* Renderer::pipeline(const Registers& regs, const ShaderModule* vs
     ri.depthAttachmentFormat = depth;
     ri.stencilAttachmentFormat = has_stencil(depth) ? depth : VK_FORMAT_UNDEFINED;
     VkGraphicsPipelineCreateInfo gci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    if (fast_pipelines_) gci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
     gci.pNext = &ri;
     gci.stageCount = 2;
     gci.pStages = stages;
