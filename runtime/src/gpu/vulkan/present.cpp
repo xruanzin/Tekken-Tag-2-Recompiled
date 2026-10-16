@@ -133,7 +133,20 @@ void main() {
         if ((rect.flags & 2u) != 0u) {
             AF3 fsr;
             FsrEasuF(fsr, AU2(p), rect.con0, rect.con1, rect.con2, rect.con3);
-            c = vec4(vec3(fsr), 1.0);
+            vec3 fsrColor = vec3(fsr);
+            // Lightweight post-EASU sharpening controlled by the launcher's
+            // sharpness slider. FSR's EASU itself remains the official AMD pass.
+            if (rect.sharpness > 0.001) {
+                vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
+                vec2 texel = 1.0 / vec2(textureSize(source, 0));
+                vec3 n = textureLod(source, uv + vec2(0.0, -texel.y), 0.0).rgb;
+                vec3 s = textureLod(source, uv + vec2(0.0,  texel.y), 0.0).rgb;
+                vec3 w = textureLod(source, uv + vec2(-texel.x, 0.0), 0.0).rgb;
+                vec3 e = textureLod(source, uv + vec2( texel.x, 0.0), 0.0).rgb;
+                vec3 blur = 0.25 * (n + s + w + e);
+                fsrColor = clamp(fsrColor + (fsrColor - blur) * rect.sharpness, 0.0, 1.0);
+            }
+            c = vec4(fsrColor, 1.0);
         } else {
             vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
             c = vec4(filtered(uv), 1.0);
@@ -191,7 +204,7 @@ void scale_include_release(void*, shaderc_include_result* result) { delete resul
 
 float presentation_sharpness() {
     const char* mode = std::getenv("TTT2_UPSCALER");
-    if (!mode || std::strcmp(mode, "sharp") != 0) return 0.0f;
+    if (!mode || (std::strcmp(mode, "sharp") != 0 && std::strcmp(mode, "fsr1") != 0)) return 0.0f;
     if (const char* value = std::getenv("TTT2_SHARPEN")) {
         return std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f);
     }

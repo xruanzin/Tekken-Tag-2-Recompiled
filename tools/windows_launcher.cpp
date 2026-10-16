@@ -215,7 +215,7 @@ struct Config {
     bool fill_screen = false;
     int render_scale = 1;    // auto,1x..4x
     int aa = 1;              // off/fxaa
-    int upscaler = 0;        // linear/nearest/sharp/(locked...)
+    int upscaler = 3;        // linear/nearest/sharp/FSR1/(locked...)
     int aniso = 2;           // default/2/4/8/16
     int sharpness = 25;      // 0..100
     int game_language = 0;   // list index
@@ -302,7 +302,7 @@ void load_config() {
     g_cfg.fill_screen = ini_int(L"Display", L"FillScreen", 0) != 0;
     g_cfg.render_scale = std::clamp(ini_int(L"Graphics", L"RenderScale", 1), 0, 4);
     g_cfg.aa = std::clamp(ini_int(L"Graphics", L"AA", 1), 0, 1);
-    g_cfg.upscaler = std::clamp(ini_int(L"Graphics", L"Upscaler", 0), 0, 3);
+    g_cfg.upscaler = std::clamp(ini_int(L"Graphics", L"Upscaler", 3), 0, 3);
     g_cfg.aniso = std::clamp(ini_int(L"Graphics", L"Anisotropy", 2), 0, 4);
     g_cfg.sharpness = std::clamp(ini_int(L"Graphics", L"Sharpness", 25), 0, 100);
     g_cfg.game_language = std::clamp(ini_int(L"Game", L"Language", 0), 0, 8);
