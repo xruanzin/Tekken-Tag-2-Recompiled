@@ -70,6 +70,9 @@ uint32_t guest_strdup(const char* text) {
 }
 
 std::filesystem::path log_directory_for_game(const std::filesystem::path& game) {
+    if (const char* user = std::getenv("TTT2_USER_DIR"); user && *user) {
+        return std::filesystem::path(user);
+    }
     std::error_code ec;
     if (std::filesystem::is_directory(game, ec)) return game / "logs";
     if (game.has_parent_path()) return game.parent_path() / "logs";
@@ -87,7 +90,8 @@ void redirect_runtime_log(const std::filesystem::path& game) {
     }
     if (ec) return;
 
-    const std::filesystem::path file = directory / "ttt2-last-run.txt";
+    const std::filesystem::path file =
+        directory / (std::getenv("TTT2_USER_DIR") ? "last_run.log" : "ttt2-last-run.txt");
 #ifdef _WIN32
     FILE* redirected = nullptr;
     if (_wfreopen_s(&redirected, file.c_str(), L"w", stderr) == 0 && redirected) {
