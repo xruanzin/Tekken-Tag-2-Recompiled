@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 #include <memory>
 #include <mutex>
 #include <system_error>
@@ -29,12 +30,16 @@ public:
     bool flush();
 
 private:
-    RandomAccessFile(std::filesystem::path path, std::fstream stream)
-        : path_(std::move(path)), stream_(std::move(stream)) {}
+    RandomAccessFile(std::filesystem::path path, std::fstream stream, uint64_t size, bool cache_reads)
+        : path_(std::move(path)), stream_(std::move(stream)), size_(size), cache_reads_(cache_reads) {}
 
     std::filesystem::path path_;
     mutable std::mutex mutex_;
     std::fstream stream_;
+    uint64_t size_ = 0;
+    bool cache_reads_ = false;
+    uint64_t cache_offset_ = 0;
+    std::vector<uint8_t> read_cache_;
 };
 
 } // namespace cafe::host
