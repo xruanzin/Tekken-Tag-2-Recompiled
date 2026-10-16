@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <filesystem>
