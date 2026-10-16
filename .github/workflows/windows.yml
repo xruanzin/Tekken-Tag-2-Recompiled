@@ -78,6 +78,12 @@ jobs:
       - name: Run data-independent tests
         run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test"
 
+      - name: Validate first-run PowerShell scripts
+        shell: pwsh
+        run: |
+          [scriptblock]::Create((Get-Content "build-windows.ps1" -Raw)) | Out-Null
+          [scriptblock]::Create((Get-Content "setup\prepare-game.ps1" -Raw)) | Out-Null
+
       - name: Upload standalone Windows launcher
         uses: actions/upload-artifact@v4
         with:
@@ -102,22 +108,30 @@ jobs:
           Copy-Item "build\windows\TTT2 Launcher.exe" (Join-Path $Package "TTT2 Launcher.exe") -Force
           Copy-Item "README.md" (Join-Path $Package "README.md") -Force
           Copy-Item "LICENSE" (Join-Path $Package "LICENSE") -Force
-          Copy-Item "docs\WINDOWS.md" (Join-Path $Package "WINDOWS.md") -Force
+          Copy-Item "CMakeLists.txt" (Join-Path $Package "CMakeLists.txt") -Force
+          Copy-Item "build-windows.ps1" (Join-Path $Package "build-windows.ps1") -Force
+          Copy-Item "vcpkg.json" (Join-Path $Package "vcpkg.json") -Force
+          Copy-Item "dependencies.lock.json" (Join-Path $Package "dependencies.lock.json") -Force
+          foreach ($Directory in @("runtime", "recomp", "tools", "tests", "launcher", "setup", "docs")) {
+              Copy-Item $Directory (Join-Path $Package $Directory) -Recurse -Force
+          }
 
           @"
           TTT2 Recompiled - Windows Launcher $Version
 
-          This package contains the redistributable Windows launcher only.
+          This package contains the Windows launcher and the automatic first-run preparation files.
 
-          It intentionally does NOT contain:
-          - Tekken Tag Tournament 2 game files
-          - Tekken.rpx
-          - generated game C++ code
-          - ttt2.exe built from game code
+          First run:
+          1. Open TTT2 Launcher.exe.
+          2. Select the extracted European v16 game folder (code/content/meta).
+          3. Click PREPARAR JOGO / PREPARE GAME.
+          4. The launcher validates code\Tekken.rpx and prepares game\ttt2.exe locally.
 
-          To play, build ttt2.exe locally from your own legally obtained European v16
-          Tekken.rpx by following README.md / WINDOWS.md, then keep TTT2 Launcher.exe
-          at the repository root. The launcher automatically finds build\windows\ttt2.exe.
+          Required build tools are detected automatically and, when missing, the setup uses
+          Windows Package Manager to install them without opening a command window.
+
+          The package does NOT contain Tekken game files, Tekken.rpx, generated game C++ code
+          or a prebuilt game-derived ttt2.exe.
 
           Original Linux port: Petexy/Tekken-Tag-2-Recompiled
           Windows port: xruanzin
@@ -139,7 +153,9 @@ jobs:
           - Display, graphics, audio, language and controller settings.
           - Sharpness and volume sliders with the fixed Windows 11 rendering/dragging behavior.
           - Windows-focused runtime configuration and AMD integrated-GPU performance presets.
-          - ZIP package with the launcher, Windows documentation and license.
+          - ZIP package with the launcher, automatic first-run setup, Windows documentation and license.
+          - First-run flow that creates game/ttt2.exe locally from the user's own EU v16 game folder.
+          - No PowerShell/build terminal is shown; setup and runtime diagnostics are written under logs/.
 
           ### Important
           This release does **not** distribute `ttt2.exe`, `Tekken.rpx`, generated game code,
