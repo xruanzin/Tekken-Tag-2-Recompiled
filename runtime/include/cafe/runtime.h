@@ -40,6 +40,12 @@ std::string sha256_hex(const std::vector<uint8_t>& data);
 
 // ---------------------------------------------------------------- dispatch
 void build_dispatch_table();
+// Runs guest code through either the ahead-of-time recompiled table or the
+// zero-install dynamic backend.
+void execute_guest(PPCContext& ctx, uint32_t address);
+// Returns a runtime-registered native callback for a host thunk address,
+// or null when the address is ordinary guest code.
+PPCFunc* find_registered_host_function(uint32_t address);
 // Gives a native function a guest-visible address (for function pointers the
 // guest stores and calls, e.g. MEMAllocFromDefaultHeap's value).
 uint32_t register_host_function(PPCFunc* function, const char* name);
