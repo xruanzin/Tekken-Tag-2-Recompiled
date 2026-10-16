@@ -143,7 +143,7 @@ $ResourceLines = @()
 if (Test-Path -LiteralPath $IconTga) {
     $WindowsIcon = Join-Path $WindowsAssets "ttt2.ico"
     Write-Host "==> Generating Windows executable icon from meta\iconTex.tga"
-    & $PythonExe (Join-Path $Root "tools\make_windows_icon.py") $IconTga $WindowsIcon
+    & $PythonExe (Join-Path $Root "launcher\make_windows_icon.py") $IconTga $WindowsIcon
     if ($LASTEXITCODE -ne 0) { throw "Windows icon generation failed" }
     $IconForRc = $WindowsIcon.Replace("\", "/")
     $ResourceLines += "1 ICON `"$IconForRc`""
@@ -151,7 +151,7 @@ if (Test-Path -LiteralPath $IconTga) {
     Write-Warning "meta\iconTex.tga was not found next to the selected RPX; executables will use the default Windows icon."
 }
 
-$LauncherTheme = Join-Path $Root "assets\ttt2_launcher_theme.jpg"
+$LauncherTheme = Join-Path $Root "launcher\assets\ttt2_launcher_theme.jpg"
 if (Test-Path -LiteralPath $LauncherTheme) {
     $ThemeForRc = $LauncherTheme.Replace("\", "/")
     $ResourceLines += "101 RCDATA `"$ThemeForRc`""

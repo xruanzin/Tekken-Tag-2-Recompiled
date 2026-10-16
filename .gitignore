@@ -21,3 +21,14 @@ __pycache__/
 # Local Windows launcher output/config (generated from the user's own game icon).
 /TTT2 Launcher.exe
 /TTT2 Launcher.ini
+
+# Local IDE/editor state.
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json
+*.user
+*.suo
+*.VC.db
+.DS_Store
+Thumbs.db

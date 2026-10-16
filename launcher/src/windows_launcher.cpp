@@ -306,9 +306,9 @@ std::wstring lower(std::wstring text) {
 
 fs::path find_theme_image() {
     const std::array<fs::path, 3> candidates = {
-        g_root / L"assets" / L"ttt2_launcher_theme.jpg",
-        g_root.parent_path() / L"assets" / L"ttt2_launcher_theme.jpg",
-        g_root.parent_path().parent_path() / L"assets" / L"ttt2_launcher_theme.jpg",
+        g_root / L"launcher" / L"assets" / L"ttt2_launcher_theme.jpg",
+        g_root.parent_path() / L"launcher" / L"assets" / L"ttt2_launcher_theme.jpg",
+        g_root.parent_path().parent_path() / L"launcher" / L"assets" / L"ttt2_launcher_theme.jpg",
     };
     std::error_code ec;
     for (const fs::path& path : candidates) {

@@ -57,7 +57,7 @@ add_subdirectory(tests)
 # locally from the user's own meta/iconTex.tga and is never committed.
 set(TTT2_WINDOWS_RESOURCE "" CACHE FILEPATH "precompiled Windows .res file with the local game icon")
 if(WIN32)
-    add_executable(ttt2_launcher WIN32 tools/windows_launcher.cpp)
+    add_executable(ttt2_launcher WIN32 launcher/src/windows_launcher.cpp)
     set_target_properties(ttt2_launcher PROPERTIES OUTPUT_NAME "TTT2 Launcher")
     target_compile_features(ttt2_launcher PRIVATE cxx_std_20)
     target_link_libraries(ttt2_launcher PRIVATE ole32 shell32 uuid comctl32 dwmapi uxtheme gdiplus gdi32 user32)
