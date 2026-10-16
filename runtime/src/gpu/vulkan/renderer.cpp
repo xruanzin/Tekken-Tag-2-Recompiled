@@ -73,11 +73,29 @@ Renderer::Renderer() {
     }
     std::fprintf(stderr, "ttt2: GPU: rendering at %ux%u (scale %u)\n", 1280 * scale_, 720 * scale_, scale_);
     compiler_ = shaderc_compiler_initialize();
+    if (const char* value = std::getenv("TTT2_ASYNC_SHADERS")) {
+        async_shaders_ = *value != '\0' && *value != '0';
+    }
+    if (async_shaders_) {
+        std::fprintf(stderr, "ttt2: GPU: asynchronous shader compilation enabled\n");
+        shader_compile_thread_ = std::thread([this] { shader_worker_main(); });
+    }
     load_pipeline_cache();
     surface_ = host::create_vulkan_surface(ctx_.instance);
     init_interpolation();
     start_presenter();
     window_start_ = now_seconds();
+}
+
+Renderer::~Renderer() {
+    {
+        std::lock_guard lock(shader_compile_mutex_);
+        shader_compile_stop_ = true;
+    }
+    shader_compile_cv_.notify_all();
+    if (shader_compile_thread_.joinable()) shader_compile_thread_.join();
+    save_pipeline_cache();
+    if (compiler_ != nullptr) shaderc_compiler_release(compiler_);
 }
 
 // ------------------------------------------------------------- commands

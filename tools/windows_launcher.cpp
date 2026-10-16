@@ -61,6 +61,7 @@ enum ControlId {
     ID_UPSCALER,
     ID_ANISO,
     ID_SHARPEN,
+    ID_ASYNC_SHADERS,
     ID_GAME_LANGUAGE,
     ID_CONTROLLER,
     ID_AUDIO,
@@ -223,6 +224,7 @@ struct Config {
     bool audio = true;
     int volume = 100;
     bool reduce_input_lag = true;
+    bool async_shaders = true;
 };
 
 HINSTANCE g_instance = nullptr;
@@ -239,7 +241,7 @@ HBRUSH g_bg_brush = nullptr, g_panel_brush = nullptr, g_edit_brush = nullptr;
 HWND g_game_edit = nullptr, g_preset = nullptr;
 HWND g_display_mode = nullptr, g_output_res = nullptr, g_fps = nullptr, g_fill = nullptr;
 HWND g_render_scale = nullptr, g_aa = nullptr, g_upscaler = nullptr, g_aniso = nullptr;
-HWND g_sharpen = nullptr, g_sharpen_value = nullptr;
+HWND g_sharpen = nullptr, g_sharpen_value = nullptr, g_async_shaders = nullptr;
 HWND g_game_language = nullptr, g_controller = nullptr, g_audio = nullptr, g_volume = nullptr, g_volume_value = nullptr;
 HWND g_reduce_input_lag = nullptr;
 HWND g_ui_language = nullptr;
@@ -258,6 +260,19 @@ const wchar_t* reduce_input_lag_text() {
         L"Input-Lag reduzieren (2 erzwungene Frames entfernen)",
         L"Riduci input lag (rimuove 2 frame di ritardo forzato)",
         L"入力遅延を軽減（強制 2 フレーム遅延を解除）"
+    };
+    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
+}
+
+const wchar_t* async_shaders_text() {
+    static constexpr const wchar_t* labels[] = {
+        L"Compilação assíncrona de shaders (reduz travadas)",
+        L"Asynchronous shader compilation (reduces stutter)",
+        L"Compilación asíncrona de shaders (reduce tirones)",
+        L"Compilation asynchrone des shaders (réduit les saccades)",
+        L"Asynchrone Shader-Kompilierung (weniger Ruckler)",
+        L"Compilazione shader asincrona (riduce gli scatti)",
+        L"非同期シェーダーコンパイル（カクつきを軽減）"
     };
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
@@ -325,6 +340,7 @@ void load_config() {
     g_cfg.audio = ini_int(L"Game", L"Audio", 1) != 0;
     g_cfg.volume = std::clamp(ini_int(L"Game", L"Volume", 100), 0, 100);
     g_cfg.reduce_input_lag = ini_int(L"Game", L"ReduceInputLag", 1) != 0;
+    g_cfg.async_shaders = ini_int(L"Graphics", L"AsyncShaders", 1) != 0;
 }
 
 void save_config() {
@@ -345,6 +361,7 @@ void save_config() {
     put_int(L"Game", L"Audio", g_cfg.audio ? 1 : 0);
     put_int(L"Game", L"Volume", g_cfg.volume);
     put_int(L"Game", L"ReduceInputLag", g_cfg.reduce_input_lag ? 1 : 0);
+    put_int(L"Graphics", L"AsyncShaders", g_cfg.async_shaders ? 1 : 0);
 }
 
 fs::path find_game_executable() {
@@ -457,6 +474,7 @@ void apply_environment() {
     set_env(L"TTT2_AUDIO", g_cfg.audio ? L"" : L"0");
     set_env(L"TTT2_AUDIO_VOLUME", std::to_wstring(g_cfg.volume));
     set_env(L"TTT2_REDUCE_INPUT_LAG", g_cfg.reduce_input_lag ? L"1" : L"");
+    set_env(L"TTT2_ASYNC_SHADERS", g_cfg.async_shaders ? L"1" : L"0");
 }
 
 bool launch_game() {
@@ -574,6 +592,7 @@ void sync_from_controls() {
     if (g_upscaler) g_cfg.upscaler = std::min(combo_sel(g_upscaler), 3);
     if (g_aniso) g_cfg.aniso = combo_sel(g_aniso);
     if (g_sharpen) g_cfg.sharpness = static_cast<int>(SendMessageW(g_sharpen, TBM_GETPOS, 0, 0));
+    if (g_async_shaders) g_cfg.async_shaders = SendMessageW(g_async_shaders, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (g_game_language) g_cfg.game_language = combo_sel(g_game_language);
     if (g_controller) g_cfg.controller = combo_sel(g_controller);
     if (g_audio) g_cfg.audio = SendMessageW(g_audio, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -744,6 +763,7 @@ void create_graphics() {
     label(page, tr(T_SHARPNESS), 24, 300);
     g_sharpen = make_slider(page, ID_SHARPEN, 24, 328, 280, 0, 100, g_cfg.sharpness);
     g_sharpen_value = make_static(page, L"", 315, 330, 80, 24, g_small);
+    g_async_shaders = make_checkbox(page, ID_ASYNC_SHADERS, async_shaders_text(), 410, 320, 350, 42, g_cfg.async_shaders);
 
     make_static(page, tr(T_UPSCALE_NOTE), 24, 405, 735, 54, g_small);
     update_slider_texts();
@@ -795,7 +815,7 @@ void destroy_pages() {
     }
     g_game_edit = g_preset = nullptr;
     g_display_mode = g_output_res = g_fps = g_fill = nullptr;
-    g_render_scale = g_aa = g_upscaler = g_aniso = g_sharpen = g_sharpen_value = nullptr;
+    g_render_scale = g_aa = g_upscaler = g_aniso = g_sharpen = g_sharpen_value = g_async_shaders = nullptr;
     g_game_language = g_controller = g_audio = g_volume = g_volume_value = nullptr;
     g_reduce_input_lag = nullptr;
     g_ui_language = nullptr;

@@ -277,7 +277,14 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     const uint64_t keys[3] = {program_hash, fetch_hash, environment_key(env)};
     const uint64_t key = fnv(keys, sizeof(keys));
     auto& entry = shaders_[key];
-    if (entry) return entry->failed ? nullptr : entry.get();
+    if (entry) {
+        const uint8_t state = entry->state.load(std::memory_order_acquire);
+        if (state == 1) {
+            shader_pending_ = true;
+            return nullptr;
+        }
+        return entry->failed || state == 3 ? nullptr : entry.get();
+    }
     entry = std::make_unique<ShaderModule>();
     const char* kind = stage == Stage::kVertex ? "vs" : "ps";
     std::string error;
@@ -285,6 +292,7 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
         std::fprintf(stderr, "ttt2: gpu: cannot translate %s %016llx: %s\n", kind,
                      static_cast<unsigned long long>(program_hash), error.c_str());
         entry->failed = true;
+        entry->state.store(3, std::memory_order_release);
         return nullptr;
     }
     if (const char* dir = dump_directory()) {
@@ -296,6 +304,17 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     // SPIR-V is cached on disk by the GLSL it came from.
     const uint64_t glsl_hash = fnv(entry->info.glsl.data(), entry->info.glsl.size());
     std::vector<uint32_t> spirv = load_cached_spirv(glsl_hash);
+    if (spirv.empty() && async_shaders_) {
+        entry->state.store(1, std::memory_order_release);
+        {
+            std::lock_guard lock(shader_compile_mutex_);
+            shader_compile_queue_.push_back(
+                {entry.get(), stage, program_hash, glsl_hash, entry->info.glsl});
+        }
+        shader_compile_cv_.notify_one();
+        shader_pending_ = true;
+        return nullptr;
+    }
     if (spirv.empty()) {
         const double compile_begin = compile_now_ms();
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
@@ -316,6 +335,7 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
                          static_cast<unsigned long long>(program_hash), shaderc_result_get_error_message(result));
             shaderc_result_release(result);
             entry->failed = true;
+            entry->state.store(3, std::memory_order_release);
             return nullptr;
         }
         const auto* code = reinterpret_cast<const uint32_t*>(shaderc_result_get_bytes(result));
@@ -330,7 +350,67 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
     mci.codeSize = spirv.size() * 4;
     mci.pCode = spirv.data();
     VK_CHECK(vkCreateShaderModule(ctx_.device, &mci, nullptr, &entry->module));
+    entry->state.store(2, std::memory_order_release);
     return entry.get();
+}
+
+void Renderer::shader_worker_main() {
+    host::set_thread_name("shader-compile");
+    shaderc_compiler_t compiler = shaderc_compiler_initialize();
+    for (;;) {
+        ShaderCompileTask task;
+        {
+            std::unique_lock lock(shader_compile_mutex_);
+            shader_compile_cv_.wait(lock, [&] { return shader_compile_stop_ || !shader_compile_queue_.empty(); });
+            if (shader_compile_stop_ && shader_compile_queue_.empty()) break;
+            task = std::move(shader_compile_queue_.front());
+            shader_compile_queue_.pop_front();
+        }
+
+        const char* kind = task.stage == Stage::kVertex ? "vs" : "ps";
+        const double begin = compile_now_ms();
+        shaderc_compile_options_t options = shaderc_compile_options_initialize();
+        shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+        shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_zero);
+        shaderc_compilation_result_t result = shaderc_compile_into_spv(
+            compiler, task.glsl.data(), task.glsl.size(),
+            task.stage == Stage::kVertex ? shaderc_vertex_shader : shaderc_fragment_shader,
+            kind, "main", options);
+        shaderc_compile_options_release(options);
+        const double elapsed = compile_now_ms() - begin;
+
+        if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+            std::fprintf(stderr, "ttt2: gpu: async shader compile failed %s %016llx:\n%s\n",
+                         kind, static_cast<unsigned long long>(task.program_hash),
+                         shaderc_result_get_error_message(result));
+            shaderc_result_release(result);
+            task.entry->failed = true;
+            task.entry->state.store(3, std::memory_order_release);
+            continue;
+        }
+
+        const auto* code = reinterpret_cast<const uint32_t*>(shaderc_result_get_bytes(result));
+        std::vector<uint32_t> spirv(code, code + shaderc_result_get_length(result) / 4);
+        shaderc_result_release(result);
+        store_cached_spirv(task.glsl_hash, spirv);
+
+        VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mci.codeSize = spirv.size() * 4;
+        mci.pCode = spirv.data();
+        const VkResult vr = vkCreateShaderModule(ctx_.device, &mci, nullptr, &task.entry->module);
+        if (vr != VK_SUCCESS) {
+            std::fprintf(stderr, "ttt2: gpu: async vkCreateShaderModule failed (%d)\n", static_cast<int>(vr));
+            task.entry->failed = true;
+            task.entry->state.store(3, std::memory_order_release);
+            continue;
+        }
+        if (elapsed >= 2.0 || trace_shader_cache()) {
+            std::fprintf(stderr, "ttt2: gpu: async shader ready %s %016llx in %.2f ms\n",
+                         kind, static_cast<unsigned long long>(task.program_hash), elapsed);
+        }
+        task.entry->state.store(2, std::memory_order_release);
+    }
+    shaderc_compiler_release(compiler);
 }
 
 // -------------------------------------------------------------- pipelines
@@ -574,6 +654,7 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     }
 
     // Shaders.
+    shader_pending_ = false;
     ShaderEnvironment vs_env, ps_env;
     build_environment(regs.value, Stage::kVertex, vs_env);
     build_environment(regs.value, Stage::kPixel, ps_env);
@@ -582,8 +663,10 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     const ShaderModule* ps = shader(Stage::kPixel, r(reg::SQ_PGM_START_PS) << 8, r(reg::SQ_PGM_START_PS + 4) << 3, 0, 0,
                                     ps_env);
     if (vs == nullptr || ps == nullptr) {
-        report_once(vs == nullptr ? "draw skipped: vertex shader failed, at" : "draw skipped: pixel shader failed, at",
-                    vs == nullptr ? r(reg::SQ_PGM_START_VS) << 8 : r(reg::SQ_PGM_START_PS) << 8);
+        if (!shader_pending_) {
+            report_once(vs == nullptr ? "draw skipped: vertex shader failed, at" : "draw skipped: pixel shader failed, at",
+                        vs == nullptr ? r(reg::SQ_PGM_START_VS) << 8 : r(reg::SQ_PGM_START_PS) << 8);
+        }
         ++skipped_draws_;
         return;
     }

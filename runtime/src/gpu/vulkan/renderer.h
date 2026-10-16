@@ -40,6 +40,7 @@
 #include <mutex>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -99,6 +100,9 @@ struct Texture {
 };
 
 struct ShaderModule {
+    // 0 = synchronous/not started, 1 = compiling asynchronously,
+    // 2 = ready, 3 = failed. State is the publication barrier for module/info.
+    std::atomic<uint8_t> state{0};
     VkShaderModule module = VK_NULL_HANDLE;
     latte::TranslatedShader info;
     bool failed = false;
@@ -114,6 +118,7 @@ struct Pipeline {
 class Renderer final : public Backend {
 public:
     Renderer();
+    ~Renderer() override;
     const char* name() const override { return "Vulkan"; }
     void draw(const Registers& regs, const Draw& draw) override;
     void clear_color(const Registers& regs, const gx2::ColorBuffer& buffer, const float rgba[4]) override;
@@ -416,6 +421,23 @@ private:
     };
     std::unordered_map<uint64_t, ProgramEntry> programs_;  // by address/size
     std::unordered_map<uint64_t, std::unique_ptr<ShaderModule>> shaders_;
+
+    struct ShaderCompileTask {
+        ShaderModule* entry = nullptr;
+        latte::Stage stage{};
+        uint64_t program_hash = 0;
+        uint64_t glsl_hash = 0;
+        std::string glsl;
+    };
+    void shader_worker_main();
+    bool async_shaders_ = false;
+    bool shader_pending_ = false;
+    bool shader_compile_stop_ = false;
+    std::mutex shader_compile_mutex_;
+    std::condition_variable shader_compile_cv_;
+    std::deque<ShaderCompileTask> shader_compile_queue_;
+    std::thread shader_compile_thread_;
+
     std::unordered_map<uint64_t, VkPipelineLayout> layouts_;
     std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> pipelines_;
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
