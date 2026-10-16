@@ -720,10 +720,36 @@ bool verify_game_source(const fs::path& game, bool show_error) {
         g_verified_game = game.wstring();
         return true;
     }
+
     if (show_error) {
-        MessageBoxW(g_main,
-                    L"The selected game is not the supported European v16 build. See user\\last_run.log for details.",
-                    L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
+        std::wstring message;
+        switch (exit_code) {
+        case 3:
+            message =
+                L"The selected Tekken.rpx does not match the exact supported European v16 executable.\n\n"
+                L"If your game already reports version 16, make sure the launcher is pointed at the same "
+                L"extracted game folder used to build this Windows package, not a separate update folder or "
+                L"a different dump.\n\nSee user\\last_run.log for the expected and detected SHA-256.";
+            break;
+        case 4:
+            message =
+                L"The selected source contains code\\Tekken.rpx, but the runtime could not parse it as the "
+                L"supported executable. See user\\last_run.log for details.";
+            break;
+        case 5:
+            message =
+                L"Your game source may be correct, but this launcher found an old or experimental TTT2 runtime.\n\n"
+                L"Extract a fresh v1.0.0 package into an empty folder and do not mix it with files from older "
+                L"preview builds. The expected runtime is bin\\ttt2-runtime.exe.";
+            break;
+        default:
+            message =
+                L"Game validation failed for a reason other than the game version (runtime exit code " +
+                std::to_wstring(exit_code) +
+                L").\n\nSee user\\last_run.log for the exact cause.";
+            break;
+        }
+        MessageBoxW(g_main, message.c_str(), L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
     }
     return false;
 }
