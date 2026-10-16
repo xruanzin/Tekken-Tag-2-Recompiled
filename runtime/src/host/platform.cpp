@@ -1,5 +1,6 @@
 #include "host/platform.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
 #include <system_error>
