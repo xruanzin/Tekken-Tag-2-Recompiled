@@ -74,6 +74,33 @@ The standalone `TTT2 Launcher.exe` release asset has its launcher artwork embedd
 the executable. A ZIP package is also provided with the launcher, Windows documentation and
 license.
 
+## First run
+
+The Windows release package is designed so a user can start with the launcher even before
+`ttt2.exe` exists.
+
+1. Extract the complete Windows release ZIP.
+2. Open `TTT2 Launcher.exe`.
+3. Select the **extracted European v16** game folder containing `code/`, `content/` and
+   `meta/`.
+4. The main button shows **PREPARE GAME / PREPARAR JOGO** while no native executable exists.
+5. The launcher validates `code/Tekken.rpx`, runs the preparation invisibly and creates
+   `game/ttt2.exe` locally.
+6. When preparation finishes, the button becomes **PLAY / JOGAR**.
+
+No build terminal is shown. First-run diagnostics are written to
+`logs/setup-last-run.txt`; runtime diagnostics are written to the game's
+`logs/ttt2-last-run.txt`.
+
+The preparation checks required Windows development tools automatically and can use Windows
+Package Manager to install missing prerequisites. The first preparation can therefore take
+several minutes and may require network access. Game files remain in the user's own folder and
+are never copied into the repository or release.
+
+> First-run preparation currently requires the extracted `code/content/meta` layout because it
+> needs direct access to `code/Tekken.rpx`. A `.wua` can still be selected after the native
+> executable has already been prepared.
+
 ## Quick start on Windows
 
 ### Requirements
