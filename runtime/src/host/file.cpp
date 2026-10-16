@@ -71,9 +71,13 @@ uint64_t RandomAccessFile::read_at(uint64_t offset, void* buffer, uint64_t lengt
     if (offset >= size_ || length == 0) return 0;
     length = std::min(length, size_ - offset);
 
-    constexpr uint64_t kReadAhead = 2ull << 20;
-    constexpr uint64_t kCacheRequest = 256ull << 10;
+    constexpr uint64_t kBaseReadAhead = 1ull << 20;
+    constexpr uint64_t kSequentialReadAhead = 4ull << 20;
+    constexpr uint64_t kCacheRequest = 512ull << 10;
     constexpr uint64_t kAlign = 64ull << 10;
+    const bool sequential = last_read_end_ != 0 && offset >= last_read_end_ && offset - last_read_end_ <= kAlign;
+    sequential_reads_ = sequential ? std::min(sequential_reads_ + 1, 8u) : 0;
+    last_read_end_ = offset + length;
     if (cache_reads_ && length <= kCacheRequest) {
         const uint64_t cache_end = cache_offset_ + read_cache_.size();
         if (!read_cache_.empty() && offset >= cache_offset_ && offset + length <= cache_end) {
@@ -82,7 +86,8 @@ uint64_t RandomAccessFile::read_at(uint64_t offset, void* buffer, uint64_t lengt
         }
 
         const uint64_t start = offset & ~(kAlign - 1);
-        const uint64_t want = std::min(kReadAhead, size_ - start);
+        const uint64_t read_ahead = sequential_reads_ >= 2 ? kSequentialReadAhead : kBaseReadAhead;
+        const uint64_t want = std::min(read_ahead, size_ - start);
         read_cache_.resize(static_cast<size_t>(want));
         stream_.clear();
         stream_.seekg(static_cast<std::streamoff>(start), std::ios::beg);
@@ -112,6 +117,8 @@ uint64_t RandomAccessFile::read_at(uint64_t offset, void* buffer, uint64_t lengt
 uint64_t RandomAccessFile::write_at(uint64_t offset, const void* buffer, uint64_t length) {
     std::lock_guard lock(mutex_);
     read_cache_.clear();
+    last_read_end_ = 0;
+    sequential_reads_ = 0;
     stream_.clear();
     stream_.seekp(static_cast<std::streamoff>(offset), std::ios::beg);
     if (!stream_) return 0;

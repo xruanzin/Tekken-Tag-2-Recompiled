@@ -236,6 +236,9 @@ struct Config {
 HINSTANCE g_instance = nullptr;
 ULONG_PTR g_gdiplus_token = 0;
 std::unique_ptr<Gdiplus::Image> g_theme_image;
+std::unique_ptr<Gdiplus::Bitmap> g_home_art_cache;
+int g_home_art_cache_width = 0;
+int g_home_art_cache_height = 0;
 IStream* g_theme_stream = nullptr;
 HWND g_main = nullptr;
 HWND g_home_art = nullptr;
@@ -316,7 +319,9 @@ fs::path find_theme_image() {
 }
 
 void load_theme_image() {
-    HRSRC resource = FindResourceW(g_instance, MAKEINTRESOURCEW(101), MAKEINTRESOURCEW(10));
+    g_home_art_cache.reset();
+    g_home_art_cache_width = g_home_art_cache_height = 0;
+    HRSRC resource = FindResourceW(g_instance, MAKEINTRESOURCEW(101), RT_RCDATA);
     if (resource) {
         const DWORD size = SizeofResource(g_instance, resource);
         HGLOBAL loaded = LoadResource(g_instance, resource);
@@ -378,8 +383,37 @@ void draw_theme_cover(Gdiplus::Graphics& graphics, const Gdiplus::Rect& dst, flo
     }};
     Gdiplus::ImageAttributes attrs;
     attrs.SetColorMatrix(&matrix);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
     graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
     graphics.DrawImage(g_theme_image.get(), dst, sx, sy, sw, sh, Gdiplus::UnitPixel, &attrs);
+}
+
+void ensure_home_art_cache(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    if (g_home_art_cache && width == g_home_art_cache_width && height == g_home_art_cache_height) return;
+    auto bitmap = std::make_unique<Gdiplus::Bitmap>(width, height, PixelFormat32bppPARGB);
+    if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) return;
+    Gdiplus::Graphics graphics(bitmap.get());
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    const Gdiplus::Rect full(0, 0, width, height);
+    Gdiplus::SolidBrush base(Gdiplus::Color(255, 7, 9, 14));
+    graphics.FillRectangle(&base, full);
+    if (g_theme_image) {
+        draw_theme_cover(graphics, Gdiplus::Rect(4, 4, std::max(1, width - 8), std::max(1, height - 8)), 1.0f);
+    }
+    Gdiplus::Pen frame(Gdiplus::Color(235, 196, 205, 220), 1.0f);
+    graphics.DrawRectangle(&frame, Gdiplus::Rect(1, 1, std::max(1, width - 3), std::max(1, height - 3)));
+    Gdiplus::SolidBrush red(Gdiplus::Color(245, 209, 24, 43));
+    Gdiplus::SolidBrush blue(Gdiplus::Color(245, 43, 147, 232));
+    graphics.FillRectangle(&red, Gdiplus::Rect(1, 1, 4, std::max(1, height - 2)));
+    graphics.FillRectangle(&blue, Gdiplus::Rect(std::max(1, width - 5), 1, 4, std::max(1, height - 2)));
+    g_home_art_cache = std::move(bitmap);
+    g_home_art_cache_width = width;
+    g_home_art_cache_height = height;
 }
 
 void paint_theme_surface(HDC dc, const RECT& rect, bool page, bool home = false) {
@@ -394,10 +428,12 @@ void paint_theme_surface(HDC dc, const RECT& rect, bool page, bool home = false)
     graphics.FillRectangle(&base, full);
 
     if (!page) {
-        // Main shell: artwork is atmospheric, not the focal point.
-        draw_theme_cover(graphics, full, 0.48f);
-        Gdiplus::SolidBrush veil(Gdiplus::Color(150, 4, 7, 12));
-        graphics.FillRectangle(&veil, full);
+        // Do not resample the full artwork on every shell repaint. The Home
+        // hero keeps it sharp while the rest of the UI remains inexpensive.
+        Gdiplus::LinearGradientBrush shell_wash(
+            Gdiplus::Point(0, 0), Gdiplus::Point(width, height),
+            Gdiplus::Color(255, 10, 8, 13), Gdiplus::Color(255, 7, 18, 29));
+        graphics.FillRectangle(&shell_wash, full);
     } else if (home) {
         Gdiplus::LinearGradientBrush home_wash(
             Gdiplus::Point(0, 0), Gdiplus::Point(width, height),
@@ -603,7 +639,7 @@ void apply_environment() {
     set_env(L"TTT2_REDUCE_INPUT_LAG", g_cfg.reduce_input_lag ? L"1" : L"");
     set_env(L"TTT2_ASYNC_SHADERS", g_cfg.async_shaders ? L"1" : L"0");
     set_env(L"TTT2_ASYNC_PIPELINES", L"1");
-    set_env(L"TTT2_FAST_PIPELINES", L"1");
+    set_env(L"TTT2_FAST_PIPELINES", L"0");
     set_env(L"TTT2_TEXTURE_CACHE", L"1");
     set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
 }
@@ -793,22 +829,18 @@ LRESULT CALLBACK art_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rc{};
         GetClientRect(hwnd, &rc);
+        const int width = std::max(1L, rc.right);
+        const int height = std::max(1L, rc.bottom);
+        ensure_home_art_cache(width, height);
         Gdiplus::Graphics graphics(dc);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-        const Gdiplus::Rect full(0, 0, std::max(1L, rc.right), std::max(1L, rc.bottom));
-        Gdiplus::SolidBrush base(Gdiplus::Color(255, 7, 9, 14));
-        graphics.FillRectangle(&base, full);
-        if (g_theme_image) {
-            draw_theme_cover(graphics,
-                             Gdiplus::Rect(4, 4, std::max(1, full.Width - 8), std::max(1, full.Height - 8)),
-                             1.0f);
+        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+        if (g_home_art_cache) {
+            graphics.DrawImage(g_home_art_cache.get(), 0, 0, width, height);
+        } else {
+            Gdiplus::SolidBrush base(Gdiplus::Color(255, 7, 9, 14));
+            graphics.FillRectangle(&base, Gdiplus::Rect(0, 0, width, height));
         }
-        Gdiplus::Pen frame(Gdiplus::Color(235, 196, 205, 220), 1.0f);
-        graphics.DrawRectangle(&frame, Gdiplus::Rect(1, 1, std::max(1, full.Width - 3), std::max(1, full.Height - 3)));
-        Gdiplus::SolidBrush red(Gdiplus::Color(245, 209, 24, 43));
-        Gdiplus::SolidBrush blue(Gdiplus::Color(245, 43, 147, 232));
-        graphics.FillRectangle(&red, Gdiplus::Rect(1, 1, 4, std::max(1, full.Height - 2)));
-        graphics.FillRectangle(&blue, Gdiplus::Rect(std::max(1, full.Width - 5), 1, 4, std::max(1, full.Height - 2)));
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -1287,6 +1319,7 @@ bool init_window() {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     g_instance = instance;
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     Gdiplus::GdiplusStartupInput gdiplus_input;
@@ -1329,6 +1362,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     DeleteObject(g_bg_brush);
     DeleteObject(g_panel_brush);
     DeleteObject(g_edit_brush);
+    g_home_art_cache.reset();
     g_theme_image.reset();
     if (g_theme_stream) {
         g_theme_stream->Release();

@@ -129,39 +129,43 @@ This port requires the European v16 executable:
 
 Write-Host "==> RPX verified: European v16"
 
-# Build a Windows .ico from the user's own Wii U icon. The generated .ico/.rc
-# stay under generated/ and are excluded from Git.
+# Build Windows resources. Launcher artwork is embedded independently of
+# the optional Wii U icon, so WUA/extracted layouts cannot lose the Home art.
 $WindowsResource = $null
 $TitleRoot = Split-Path -Parent (Split-Path -Parent $RpxPath)
 $IconTga = Join-Path $TitleRoot "meta\iconTex.tga"
+$WindowsAssets = Join-Path $Root "generated\windows"
+New-Item -ItemType Directory -Force $WindowsAssets | Out-Null
+$WindowsRc = Join-Path $WindowsAssets "ttt2.rc"
+$WindowsResourceCandidate = Join-Path $WindowsAssets "ttt2.res"
+$ResourceLines = @()
+
 if (Test-Path -LiteralPath $IconTga) {
-    $WindowsAssets = Join-Path $Root "generated\windows"
-    New-Item -ItemType Directory -Force $WindowsAssets | Out-Null
     $WindowsIcon = Join-Path $WindowsAssets "ttt2.ico"
-    $WindowsRc = Join-Path $WindowsAssets "ttt2.rc"
-    $WindowsResource = Join-Path $WindowsAssets "ttt2.res"
     Write-Host "==> Generating Windows executable icon from meta\iconTex.tga"
     & $PythonExe (Join-Path $Root "tools\make_windows_icon.py") $IconTga $WindowsIcon
-    if ($LASTEXITCODE -ne 0) {
-        throw "Windows icon generation failed"
-    }
+    if ($LASTEXITCODE -ne 0) { throw "Windows icon generation failed" }
     $IconForRc = $WindowsIcon.Replace("\", "/")
-    $ResourceLines = @("1 ICON `"$IconForRc`"")
-    $LauncherTheme = Join-Path $Root "assets\ttt2_launcher_theme.jpg"
-    if (Test-Path -LiteralPath $LauncherTheme) {
-        $ThemeForRc = $LauncherTheme.Replace("\", "/")
-        $ResourceLines += "101 RCDATA `"$ThemeForRc`""
-        Write-Host "==> Embedding launcher artwork"
-    }
-    Set-Content -LiteralPath $WindowsRc -Encoding ASCII -Value $ResourceLines
-
-    Write-Host "==> Compiling Windows launcher resources"
-    & $LlvmRcExe "/fo" $WindowsResource $WindowsRc
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $WindowsResource)) {
-        throw "Windows resource compilation failed"
-    }
+    $ResourceLines += "1 ICON `"$IconForRc`""
 } else {
     Write-Warning "meta\iconTex.tga was not found next to the selected RPX; executables will use the default Windows icon."
+}
+
+$LauncherTheme = Join-Path $Root "assets\ttt2_launcher_theme.jpg"
+if (Test-Path -LiteralPath $LauncherTheme) {
+    $ThemeForRc = $LauncherTheme.Replace("\", "/")
+    $ResourceLines += "101 RCDATA `"$ThemeForRc`""
+    Write-Host "==> Embedding high-quality launcher artwork"
+}
+
+if ($ResourceLines.Count -gt 0) {
+    Set-Content -LiteralPath $WindowsRc -Encoding ASCII -Value $ResourceLines
+    Write-Host "==> Compiling Windows launcher resources"
+    & $LlvmRcExe "/fo" $WindowsResourceCandidate $WindowsRc
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $WindowsResourceCandidate)) {
+        throw "Windows resource compilation failed"
+    }
+    $WindowsResource = $WindowsResourceCandidate
 }
 
 $BuildPath = Join-Path $Root $BuildDir

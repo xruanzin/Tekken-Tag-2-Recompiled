@@ -40,6 +40,8 @@ private:
     bool cache_reads_ = false;
     uint64_t cache_offset_ = 0;
     std::vector<uint8_t> read_cache_;
+    uint64_t last_read_end_ = 0;
+    uint32_t sequential_reads_ = 0;
 };
 
 } // namespace cafe::host

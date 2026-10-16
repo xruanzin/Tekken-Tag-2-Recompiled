@@ -82,7 +82,7 @@ target_link_libraries(cafe_runtime PUBLIC cafe_rpx cafe_title OpenSSL::Crypto ZA
 # Vulkan structures are initialised with only their sType.
 ttt2_warnings(cafe_runtime)
 if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(cafe_runtime PRIVATE /clang:-Wno-missing-field-initializers)
+    target_compile_options(cafe_runtime PRIVATE /O2 /arch:AVX2 /clang:-Wno-missing-field-initializers)
 elseif(NOT MSVC)
     target_compile_options(cafe_runtime PRIVATE -Wno-missing-field-initializers)
 endif()
