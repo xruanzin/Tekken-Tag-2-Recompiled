@@ -9,8 +9,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     wchar_t launcher[32768]{};
     wchar_t command[32768]{};
 
-    const DWORD length = GetModuleFileNameW(nullptr, directory, static_cast<DWORD>(std::size(directory)));
-    if (length == 0 || length >= std::size(directory)) return 1;
+    const DWORD length = GetModuleFileNameW(nullptr, directory, 32768);
+    if (length == 0 || length >= 32768) return 1;
 
     wchar_t* slash = wcsrchr(directory, L'\\');
     if (slash) *slash = 0;
