@@ -361,6 +361,7 @@ const ShaderModule* Renderer::shader(Stage stage, uint32_t address, uint32_t siz
 
 void Renderer::shader_worker_main() {
     host::set_thread_name("shader-compile");
+    host::set_thread_low_priority();
     shaderc_compiler_t compiler = shaderc_compiler_initialize();
     for (;;) {
         ShaderCompileTask task;
@@ -421,6 +422,7 @@ void Renderer::shader_worker_main() {
 
 void Renderer::pipeline_worker_main() {
     host::set_thread_name("pipeline-compile");
+    host::set_thread_low_priority();
     for (;;) {
         PipelineCompileTask task;
         {

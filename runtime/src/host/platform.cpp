@@ -124,4 +124,11 @@ void set_thread_name(std::string_view name) {
 #endif
 }
 
+void set_thread_low_priority() {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+}
+
+
 } // namespace cafe::host

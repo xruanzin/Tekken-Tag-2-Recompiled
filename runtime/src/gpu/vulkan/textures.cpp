@@ -144,6 +144,7 @@ private:
 
     void run() {
         host::set_thread_name("texture-cache");
+        host::set_thread_low_priority();
         for (;;) {
             Item item{};
             {
