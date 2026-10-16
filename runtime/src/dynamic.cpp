@@ -15,10 +15,21 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace cafe::dynamic {
 namespace {
@@ -30,6 +41,27 @@ struct Decoded {
     uint32_t word{};
     Op op{Op::invalid};
 };
+
+using BlockFn = uint32_t (*)(PPCContext*, uint8_t*);
+
+struct Block {
+    uint32_t start{};
+    std::vector<const Decoded*> instructions;
+    BlockFn native{};
+};
+
+constexpr uint32_t kPresentationHook = 0x0864107Cu;
+constexpr size_t kMaxBlockInstructions = 64;
+
+std::unordered_map<uint32_t, std::unique_ptr<Block>> g_blocks;
+std::mutex g_block_mutex;
+
+#ifdef _WIN32
+constexpr size_t kJitArenaSize = 8u << 20;
+uint8_t* g_jit_arena = nullptr;
+size_t g_jit_offset = 0;
+bool g_jit_enabled = true;
+#endif
 
 struct CodeSection {
     uint32_t begin{};
@@ -50,6 +82,46 @@ bool g_enabled = false;
 std::vector<CodeSection> g_code;
 std::unordered_map<uint32_t, uint32_t> g_rel24_targets;
 std::unordered_map<uint32_t, ImportBinding> g_imports;
+
+bool ends_block(Op op) {
+    switch (op) {
+    case Op::b:
+    case Op::bc:
+    case Op::bclr:
+    case Op::bcctr:
+    case Op::tw:
+    case Op::twi:
+    case Op::sc:
+    case Op::rfi:
+        return true;
+    default:
+        return false;
+    }
+}
+
+#ifdef _WIN32
+void reset_jit_arena() {
+    if (g_jit_arena) {
+        VirtualFree(g_jit_arena, 0, MEM_RELEASE);
+        g_jit_arena = nullptr;
+    }
+    g_jit_offset = 0;
+    const char* option = std::getenv("TTT2_DYNAMIC_JIT");
+    g_jit_enabled = !(option && *option == '0');
+    if (!g_jit_enabled) return;
+
+    // Small baseline thunks are emitted on demand. The arena is process-local
+    // and contains no guest code bytes; each thunk binds one decoded block to
+    // the native C++ block executor.
+    g_jit_arena = static_cast<uint8_t*>(
+        VirtualAlloc(nullptr, kJitArenaSize, MEM_RESERVE | MEM_COMMIT,
+                     PAGE_EXECUTE_READWRITE));
+    if (!g_jit_arena) {
+        g_jit_enabled = false;
+        std::fprintf(stderr, "ttt2: dynamic host: x64 baseline JIT arena unavailable; using C++ blocks\n");
+    }
+}
+#endif
 
 uint32_t rotate_mask(uint32_t mb, uint32_t me) {
     const uint32_t begin = 0xFFFFFFFFu >> mb;
@@ -819,6 +891,81 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     return next;
 }
 
+uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
+    uint32_t next = block->start;
+    for (const Decoded* ins : block->instructions) {
+        next = execute_one(*ctx, base, *ins);
+        if (next != ins->address + 4 || ends_block(ins->op)) {
+            return next;
+        }
+    }
+    return next;
+}
+
+#ifdef _WIN32
+BlockFn emit_block_thunk(Block* block) {
+    if (!g_jit_enabled || !g_jit_arena) return nullptr;
+
+    // Windows x64 ABI:
+    //   RCX = PPCContext*, RDX = guest base, R8 = Block*.
+    // The thunk supplies R8 then tail-jumps to execute_block_cpp, preserving
+    // the caller's shadow space and return address.
+    constexpr size_t kThunkSize = 22;
+    if (g_jit_offset + 32 > kJitArenaSize) return nullptr;
+    g_jit_offset = (g_jit_offset + 15) & ~size_t{15};
+    uint8_t* code = g_jit_arena + g_jit_offset;
+    uint8_t* p = code;
+
+    *p++ = 0x49; *p++ = 0xB8; // mov r8, imm64
+    const uintptr_t block_ptr = reinterpret_cast<uintptr_t>(block);
+    std::memcpy(p, &block_ptr, sizeof(block_ptr)); p += sizeof(block_ptr);
+
+    *p++ = 0x48; *p++ = 0xB8; // mov rax, imm64
+    const uintptr_t helper = reinterpret_cast<uintptr_t>(&execute_block_cpp);
+    std::memcpy(p, &helper, sizeof(helper)); p += sizeof(helper);
+
+    *p++ = 0xFF; *p++ = 0xE0; // jmp rax
+    static_assert(kThunkSize == 22);
+    g_jit_offset += static_cast<size_t>(p - code);
+    FlushInstructionCache(GetCurrentProcess(), code, static_cast<SIZE_T>(p - code));
+    return reinterpret_cast<BlockFn>(code);
+}
+#endif
+
+Block* get_or_build_block(uint32_t start) {
+    {
+        std::lock_guard lock(g_block_mutex);
+        const auto found = g_blocks.find(start);
+        if (found != g_blocks.end()) return found->second.get();
+    }
+
+    auto block = std::make_unique<Block>();
+    block->start = start;
+    uint32_t pc = start;
+    for (size_t count = 0; count < kMaxBlockInstructions; ++count) {
+        // Make the native presentation hook an explicit block boundary so
+        // normal execution always passes through run()'s hook interception.
+        if (pc == kPresentationHook && pc != start) break;
+        const Decoded* ins = decoded_at(pc);
+        if (!ins) break;
+        block->instructions.push_back(ins);
+        if (ends_block(ins->op)) break;
+        pc += 4;
+    }
+    if (block->instructions.empty()) return nullptr;
+
+    std::lock_guard lock(g_block_mutex);
+    if (const auto found = g_blocks.find(start); found != g_blocks.end()) {
+        return found->second.get();
+    }
+    Block* raw = block.get();
+    g_blocks.emplace(start, std::move(block));
+#ifdef _WIN32
+    raw->native = emit_block_thunk(raw);
+#endif
+    return raw;
+}
+
 } // namespace
 
 void initialize(const std::vector<uint8_t>& rpx_bytes) {
@@ -829,6 +976,13 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     g_code.clear();
     g_rel24_targets.clear();
     g_imports.clear();
+    {
+        std::lock_guard block_lock(g_block_mutex);
+        g_blocks.clear();
+#ifdef _WIN32
+        reset_jit_arena();
+#endif
+    }
 
     g_rel24_targets.insert(image.rel24_targets.begin(), image.rel24_targets.end());
 
@@ -873,6 +1027,10 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     std::fprintf(stderr,
                  "ttt2: dynamic host: decoded %zu PPC instructions across %zu code sections in %.2f ms\n",
                  instruction_count, g_code.size(), ms);
+#ifdef _WIN32
+    std::fprintf(stderr, "ttt2: dynamic host: baseline x64 block JIT %s\n",
+                 g_jit_enabled && g_jit_arena ? "enabled" : "disabled");
+#endif
 }
 
 bool enabled() {
@@ -926,11 +1084,18 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
             continue;
         }
 
-        const Decoded* ins = decoded_at(pc);
-        if (!ins) {
+        Block* block = get_or_build_block(pc);
+        if (!block) {
             fatal("dynamic guest execution reached non-code address 0x%08X", pc);
         }
-        pc = execute_one(ctx, base, *ins);
+#ifdef _WIN32
+        if (block->native) {
+            pc = block->native(&ctx, base);
+        } else
+#endif
+        {
+            pc = execute_block_cpp(&ctx, base, block);
+        }
     }
 }
 
