@@ -721,11 +721,18 @@ HWND make_checkbox(HWND parent, int id, const wchar_t* text, int x, int y, int w
 }
 
 HWND make_slider(HWND parent, int id, int x, int y, int w, int minv, int maxv, int value) {
-    HWND hwnd = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
-                                x, y, w, 32, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_instance, nullptr);
+    HWND hwnd = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS | TBS_FIXEDLENGTH,
+                                x, y, w, 34, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_instance, nullptr);
     SendMessageW(hwnd, TBM_SETRANGE, TRUE, MAKELPARAM(minv, maxv));
-    SendMessageW(hwnd, TBM_SETPOS, TRUE, value);
-    dark_control(hwnd);
+    SendMessageW(hwnd, TBM_SETLINESIZE, 0, 1);
+    SendMessageW(hwnd, TBM_SETPAGESIZE, 0, 10);
+    SendMessageW(hwnd, TBM_SETTHUMBLENGTH, 18, 0);
+    SendMessageW(hwnd, TBM_SETPOS, TRUE, std::clamp(value, minv, maxv));
+    // The stock themed trackbar leaves visual trails on some Windows 11
+    // configurations. We custom-draw it below instead of mixing UxTheme's
+    // trackbar painting with our dark page background.
+    SetWindowTheme(hwnd, L"", L"");
     return hwnd;
 }
 
@@ -855,6 +862,7 @@ LRESULT CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
     case WM_COMMAND:
     case WM_HSCROLL:
+    case WM_NOTIFY:
     case WM_DRAWITEM:
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT:
@@ -967,7 +975,7 @@ void create_graphics() {
 
     label(page, tr(T_SHARPNESS), 24, 300);
     g_sharpen = make_slider(page, ID_SHARPEN, 24, 328, 280, 0, 100, g_cfg.sharpness);
-    g_sharpen_value = make_static(page, L"", 315, 330, 80, 24, g_small);
+    g_sharpen_value = make_static(page, L"", 315, 333, 80, 24, g_nav_font);
     g_async_shaders = make_checkbox(page, ID_ASYNC_SHADERS, async_shaders_text(), 410, 320, 350, 42, g_cfg.async_shaders);
 
     make_static(page, tr(T_UPSCALE_NOTE), 24, 405, 735, 54, g_small);
@@ -990,7 +998,7 @@ void create_game() {
     g_audio = make_checkbox(page, ID_AUDIO, tr(T_AUDIO), 24, 235, 220, 32, g_cfg.audio);
     label(page, tr(T_VOLUME), 24, 290);
     g_volume = make_slider(page, ID_VOLUME, 24, 318, 280, 0, 100, g_cfg.volume);
-    g_volume_value = make_static(page, L"", 315, 320, 80, 24, g_small);
+    g_volume_value = make_static(page, L"", 315, 323, 80, 24, g_nav_font);
     g_reduce_input_lag = make_checkbox(page, 500, reduce_input_lag_text(), 24, 375, 700, 34, g_cfg.reduce_input_lag);
     update_slider_texts();
 
@@ -1103,6 +1111,69 @@ void draw_button(const DRAWITEMSTRUCT* item) {
     DrawTextW(item->hDC, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
+LRESULT draw_slider(const NMCUSTOMDRAW* custom) {
+    if (!custom) return CDRF_DODEFAULT;
+    HWND slider = custom->hdr.hwndFrom;
+    if (slider != g_sharpen && slider != g_volume) return CDRF_DODEFAULT;
+
+    if (custom->dwDrawStage == CDDS_PREPAINT) {
+        RECT client{};
+        GetClientRect(slider, &client);
+        HBRUSH background = CreateSolidBrush(kPanel);
+        FillRect(custom->hdc, &client, background);
+        DeleteObject(background);
+        return CDRF_NOTIFYITEMDRAW;
+    }
+
+    if (custom->dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
+
+    if (custom->dwItemSpec == TBCD_TICS) return CDRF_SKIPDEFAULT;
+
+    if (custom->dwItemSpec == TBCD_CHANNEL) {
+        RECT client{};
+        RECT thumb{};
+        GetClientRect(slider, &client);
+        SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+
+        const int center_y = (client.top + client.bottom) / 2;
+        RECT channel{8, center_y - 3, std::max(9L, client.right - 8), center_y + 3};
+        HBRUSH rail = CreateSolidBrush(RGB(48, 56, 70));
+        FillRect(custom->hdc, &channel, rail);
+        DeleteObject(rail);
+
+        const int thumb_center = std::clamp((thumb.left + thumb.right) / 2, channel.left, channel.right);
+        RECT active = channel;
+        active.right = thumb_center;
+        HBRUSH accent = CreateSolidBrush(kRed);
+        FillRect(custom->hdc, &active, accent);
+        DeleteObject(accent);
+
+        RECT highlight{active.left, active.top, active.right, active.top + 1};
+        HBRUSH ice = CreateSolidBrush(kIce);
+        FillRect(custom->hdc, &highlight, ice);
+        DeleteObject(ice);
+        return CDRF_SKIPDEFAULT;
+    }
+
+    if (custom->dwItemSpec == TBCD_THUMB) {
+        RECT r = custom->rc;
+        InflateRect(&r, -1, -1);
+        const bool focused = GetFocus() == slider;
+        HBRUSH fill = CreateSolidBrush(focused ? RGB(38, 65, 86) : kPanel2);
+        HPEN border = CreatePen(PS_SOLID, focused ? 2 : 1, focused ? kIce : kSilver);
+        HGDIOBJ old_brush = SelectObject(custom->hdc, fill);
+        HGDIOBJ old_pen = SelectObject(custom->hdc, border);
+        RoundRect(custom->hdc, r.left, r.top, r.right, r.bottom, 8, 8);
+        SelectObject(custom->hdc, old_pen);
+        SelectObject(custom->hdc, old_brush);
+        DeleteObject(border);
+        DeleteObject(fill);
+        return CDRF_SKIPDEFAULT;
+    }
+
+    return CDRF_DODEFAULT;
+}
+
 void handle_browse() {
     const auto chosen = choose_game();
     if (!chosen) return;
@@ -1166,10 +1237,24 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         if ((id == ID_RENDER_SCALE || id == ID_AA || id == ID_ANISO) && code == CBN_SELCHANGE) mark_custom();
         return 0;
     }
-    case WM_HSCROLL:
-        if (reinterpret_cast<HWND>(lparam) == g_sharpen) mark_custom();
+    case WM_HSCROLL: {
+        HWND slider = reinterpret_cast<HWND>(lparam);
+        if (slider == g_sharpen) mark_custom();
         update_slider_texts();
+        if (slider == g_sharpen || slider == g_volume) {
+            RedrawWindow(slider, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        }
         return 0;
+    }
+
+    case WM_NOTIFY: {
+        const auto* header = reinterpret_cast<const NMHDR*>(lparam);
+        if (header && header->code == NM_CUSTOMDRAW &&
+            (header->hwndFrom == g_sharpen || header->hwndFrom == g_volume)) {
+            return draw_slider(reinterpret_cast<const NMCUSTOMDRAW*>(lparam));
+        }
+        return 0;
+    }
 
     case WM_DRAWITEM:
         draw_button(reinterpret_cast<const DRAWITEMSTRUCT*>(lparam));

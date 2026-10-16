@@ -88,9 +88,17 @@ Renderer::Renderer() {
         async_pipelines_ = *value != '\0' && *value != '0';
     }
     // Cold cache: prioritize quick first-use creation to reduce traversal
-    // stutter. Warm cache: use fully optimized pipelines for steady-state
-    // gameplay. TTT2_FAST_PIPELINES explicitly overrides this auto policy.
-    fast_pipelines_ = !pipeline_cache_warm_;
+    // stutter. On the Windows AMD integrated driver, new fully optimized
+    // pipelines can still take hundreds of milliseconds even with a warm
+    // VkPipelineCache. Prefer fast-create there: the small steady-state cost
+    // is far less disruptive than blocking the title for 0.5-0.9 seconds.
+    bool latency_sensitive_pipeline_driver = false;
+#ifdef _WIN32
+    latency_sensitive_pipeline_driver =
+        ctx_.properties.vendorID == 0x1002 &&
+        ctx_.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#endif
+    fast_pipelines_ = !pipeline_cache_warm_ || latency_sensitive_pipeline_driver;
     if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
         fast_pipelines_ = *value != '\0' && *value != '0';
     }
