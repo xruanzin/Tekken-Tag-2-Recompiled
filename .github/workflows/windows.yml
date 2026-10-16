@@ -130,7 +130,7 @@ jobs:
           "@ | Set-Content -LiteralPath (Join-Path $Package "README-FIRST.txt") -Encoding UTF8
 
           $Zip = Join-Path $DistRoot "TTT2-Windows-$Version.zip"
-          Compress-Archive -Path (Join-Path $Package "*") -DestinationPath $Zip -CompressionLevel Optimal -Force
+          Compress-Archive -Path $Package -DestinationPath $Zip -CompressionLevel Optimal -Force
 
           $Standalone = Join-Path $DistRoot "Tekken Tag Tournament 2.exe"
           Copy-Item "build\windows\Tekken Tag Tournament 2.exe" $Standalone -Force
