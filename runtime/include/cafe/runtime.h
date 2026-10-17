@@ -40,6 +40,12 @@ std::string sha256_hex(const std::vector<uint8_t>& data);
 
 // ---------------------------------------------------------------- dispatch
 void build_dispatch_table();
+// Runs guest code through either the ahead-of-time recompiled table or the
+// zero-install dynamic backend.
+void execute_guest(PPCContext& ctx, uint32_t address);
+// Returns a runtime-registered native callback for a host thunk address,
+// or null when the address is ordinary guest code.
+PPCFunc* find_registered_host_function(uint32_t address);
 // Gives a native function a guest-visible address (for function pointers the
 // guest stores and calls, e.g. MEMAllocFromDefaultHeap's value).
 uint32_t register_host_function(PPCFunc* function, const char* name);
@@ -52,6 +58,13 @@ PPCContext* current_context();
 void set_current_context(PPCContext* ctx);
 
 [[noreturn]] void fatal(const char* format, ...) __attribute__((format(printf, 1, 2)));
+
+// Raw boot/crash tracing is intentionally independent of stdout/stderr so it
+// still works when the Windows GUI-subsystem process has no console handles
+// or the ordinary runtime log cannot be flushed.
+void begin_diagnostic_trace();
+void diagnostic_trace(const char* stage);
+
 void install_fault_handler();
 void print_guest_state(const PPCContext& ctx);
 

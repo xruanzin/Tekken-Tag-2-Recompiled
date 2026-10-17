@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // How the title presents buttons and its logo on a computer:
 // - Menus confirm with the bottom face button and go back with the right
 //   one, as on the other consoles (Nintendo controllers keep the Wii U's
@@ -15,5 +17,10 @@ namespace cafe::title {
 
 // After vfs::open_game and the image load, before the title runs.
 void prepare_presentation();
+
+// Native hook used after the title creates its system-settings object.
+// Static recompilation calls it from the generated-function override; the
+// zero-install backend invokes it from its dynamic function hook.
+void system_info_created(uint32_t info);
 
 } // namespace cafe::title

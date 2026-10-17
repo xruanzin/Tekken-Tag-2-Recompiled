@@ -188,6 +188,17 @@ bool open_window(const char* title) {
         window_w = 640 * fit;
         window_h = 360 * fit;
     }
+    // Optional launcher-selected output/window resolution. This is independent
+    // of the internal render scale (TTT2_SCALE).
+    if (const char* w = std::getenv("TTT2_WINDOW_WIDTH")) {
+        if (const char* h = std::getenv("TTT2_WINDOW_HEIGHT")) {
+            const int requested_w = std::atoi(w), requested_h = std::atoi(h);
+            if (requested_w >= 640 && requested_h >= 360 && requested_w <= 16384 && requested_h <= 16384) {
+                window_w = requested_w;
+                window_h = requested_h;
+            }
+        }
+    }
     // TTT2_FULLSCREEN=1 starts fullscreen (F11 toggles it).
     const char* fullscreen = std::getenv("TTT2_FULLSCREEN");
     g_window = SDL_CreateWindow(title, window_w, window_h,

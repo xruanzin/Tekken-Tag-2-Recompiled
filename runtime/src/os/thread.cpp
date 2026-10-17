@@ -3,6 +3,8 @@
 #include "cafe/export.h"
 #include "cafe/ppc_ops.h"
 #include "cafe/sysmem.h"
+#include "host/platform.h"
+#include "host/thread.h"
 
 #include <algorithm>
 #include <chrono>
@@ -111,40 +113,34 @@ void finish(Thread* t, uint32_t exit_value) {
     wake(thread); // joiners
 }
 
-void* host_main(void* argument) {
+void host_main(void* argument) {
     Thread* t = static_cast<Thread*>(argument);
     // "OSThread address/core", for debuggers and profilers.
     char name[16];
     std::snprintf(name, sizeof(name), "%08X/%d", t->guest, t->core);
-    pthread_setname_np(pthread_self(), name);
+    host::set_thread_name(name);
+    host::set_guest_core_hint(t->core);
+    host::set_thread_high_priority();
     t_current = t;
     set_current_context(&t->ctx);
     uint32_t exit_value;
     if (setjmp(t->exit_jump) == 0) {
         const uint32_t entry = field<uint32_t>(t->guest, kEntry);
-        cafe_ppc_lookup(entry)(t->ctx, guest_base());
+        execute_guest(t->ctx, entry);
         exit_value = t->ctx.r[3];
     } else {
         exit_value = t->ctx.r[3]; // OSExitThread left its argument here
     }
     finish(t, exit_value);
-    return nullptr;
 }
 
 void start_host_thread(Thread* t) {
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, kHostStackSize);
-    if (pthread_create(&t->host, &attr, host_main, t) != 0) {
-        fatal("cannot create a host thread for guest thread 0x%08X", t->guest);
-    }
-    pthread_attr_destroy(&attr);
-    pthread_detach(t->host);
+    host::start_detached_thread(host_main, t, kHostStackSize);
     t->host_started = true;
 }
 
 // Runs deferred guest work (thread deallocators) in its own context.
-void* system_thread_main(void*) {
+void system_thread_main(void*) {
     Thread* t = g_system_thread;
     t_current = t;
     set_current_context(&t->ctx);
@@ -158,7 +154,6 @@ void* system_thread_main(void*) {
         }
         work(t->ctx);
     }
-    return nullptr;
 }
 
 // A guest thread for runtime-internal work: OSThread structure and stack in
@@ -213,13 +208,7 @@ int run_main_thread(uint32_t entry, uint32_t argc, uint32_t argv, uint32_t stack
     {
         KernelLock lock(g_kernel);
         g_system_thread = make_internal_thread("cafe system", 0x10000, 2);
-        pthread_t system;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, kHostStackSize);
-        pthread_create(&system, &attr, system_thread_main, nullptr);
-        pthread_attr_destroy(&attr);
-        pthread_detach(system);
+        host::start_detached_thread(system_thread_main, nullptr, kHostStackSize);
     }
 
     // The main thread runs on core 1 with the stack size from the RPX file
@@ -242,13 +231,8 @@ int run_main_thread(uint32_t entry, uint32_t argc, uint32_t argv, uint32_t stack
         set_state(thread, kRunning);
         g_threads[thread] = t;
     }
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, kHostStackSize);
-    pthread_t host;
-    pthread_create(&host, &attr, host_main, t);
-    pthread_attr_destroy(&attr);
-    pthread_join(host, nullptr);
+    host::JoinableThread* host_thread = host::start_joinable_thread(host_main, t, kHostStackSize);
+    host::join_thread(host_thread);
     // Returning from the RPX entry point ends the process with its result.
     return static_cast<int32_t>(field<uint32_t>(thread, kExitValue));
 }

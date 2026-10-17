@@ -1,272 +1,238 @@
-# Tekken Tag 2 Recompiled
+# Tekken Tag Tournament 2 Recompiled — Windows Port
 
-An unofficial native Linux port of **Tekken Tag Tournament 2 Wii U Edition**,
-made by static recompilation: the game's PowerPC code is translated to C++
-ahead of time and runs as native x86-64 code on a reimplementation of the
-Wii U's system libraries. There is no CPU emulation; the game's GPU commands
-and shaders are translated to Vulkan as it runs.
+[![Windows host](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/actions/workflows/windows.yml/badge.svg?branch=windows-host)](https://github.com/xruanzin/Tekken-Tag-2-Recompiled/actions/workflows/windows.yml)
+
+Unofficial **Windows 11 port** of the original Linux static-recompilation project
+[Petexy/Tekken-Tag-2-Recompiled](https://github.com/Petexy/Tekken-Tag-2-Recompiled).
+
+**Original Linux port / recompiler architecture:** Petexy and upstream contributors.  
+**Windows port, launcher, host integration and Windows-focused performance work:** xruanzin.
+
+This fork keeps the original project's static-recompilation architecture and native Windows/Vulkan
+runtime. Public Player releases do not contain game-derived AOT code. On first launch the Player
+prepares a local PowerPC-to-x86-64 runtime from the user's own supported EU v16 RPX, shows the
+current preparation stage in the launcher, and reuses that local runtime on later launches.
 
 > [!IMPORTANT]
-> **No game files are included.** This repository holds only original tools
-> and runtime code; you need your own copy of the game
-> ([see below](#the-game)). The C++ generated from the game, programs built
-> from it, an install folder, and captures or dumps made with the debugging
-> options all contain the game's code or assets: do not share or upload
-> them, and do not attach them to issues.
+> **No game files are included.** You must provide your own legally obtained copy of
+> *TEKKEN TAG TOURNAMENT 2 Wii U EDITION*. Do not upload RPX files, game archives,
+> generated game code, captures, dumps or other copyrighted game assets to this repository.
 >
-> This project is not affiliated with or endorsed by Bandai Namco
-> Entertainment or Nintendo. TEKKEN, Tekken Tag Tournament and Wii U are
-> trademarks of their respective owners.
+> This project is not affiliated with or endorsed by Bandai Namco Entertainment or Nintendo.
 
-## Features
+## Windows fork goals
 
-- **Plays natively**: intro, menus, character select, arcade mode and versus
-  matches, with sound and saves. Arcade mode has been played through by
-  hand.
-- **120 frames per second** on displays of 100 Hz and more: between each
-  two frames the game renders, the port shows one more, drawn from the same
-  frame with the camera, objects and character skeletons blended halfway.
-  The game's logic, physics and hitboxes stay at 60 Hz. When other programs
-  keep the GPU busy, frames go out without their extra frame rather than
-  slowing the game down.
-- **Higher resolutions**: up to 4x the original 720p; by default the
-  smallest scale that covers your display (2x, 2560x1440, on 1080p and
-  1440p displays; 3x on 4K).
-- **Even frame pacing** on 120 Hz and 240 Hz displays (with
-  `VK_KHR_present_wait2`): the game's clock follows the display's
-  refreshes, so every image stays on screen equally long.
-- **Controls and icons as on a computer**: menus confirm with the bottom face
-  button and go back with the right one, as on the other consoles (Nintendo
-  controllers keep the Wii U's way). Button icons follow the controller in
-  use: PlayStation controllers get PlayStation-style icons, any other
-  neutral ones that show each face button by its place on the pad. The
-  game's texts show the icons where they named the Wii U's buttons, and the
-  title screen's logo no longer says "Wii U Edition". All of it is made by
-  the port from the Wii U game's own files.
-- **Installs like any other program**: `ttt2 --install` copies the game into
-  a folder you choose and adds it to the application menu.
-- **Made to be modified**: every function of the game is a C++ function that
-  can be replaced ([see below](#changing-the-game)).
+This branch focuses on making the original Linux port feel like a native Windows project:
 
-## Status
+- native Windows 11 build with Clang/LLVM, CMake, Ninja and Vulkan;
+- dedicated Windows launcher;
+- persistent shader, pipeline and detiled-texture caches;
+- Windows file I/O and presentation tuning;
+- low-latency input option;
+- 60 / 120 / 180 / 240 Hz presentation modes;
+- internal-resolution scaling and FSR 1 presentation scaling;
+- Windows-specific AMD iGPU pipeline-latency mitigation;
+- reproducible CI builds and data-independent tests.
 
-Playable from boot through arcade mode. Not done yet: the Wii U GamePad's
-screen and speaker, online play, the software keyboard and error viewer
-screens, and audio effects the game does not seem to use. Only the European
-version with update 16 is supported (other versions have different code).
-Tested on Linux with an AMD GPU (RADV) under KDE Plasma (Wayland). Design
-notes, measurements and milestones are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Linux development remains centered on the
+[original upstream repository](https://github.com/Petexy/Tekken-Tag-2-Recompiled).
 
-## The game
+## Current status
 
-You need **TEKKEN TAG TOURNAMENT 2 Wii U EDITION**, European release, with
-update v16, as a `.wua` archive (Cemu can create one from an installed title;
-the update may be merged into the game's folder or stored beside it), or as
-a folder with the game's `code/`, `content/` and `meta/` and the update's
-files over them.
+The Windows port boots and runs the game through menus, character selection and matches.
+The runtime is actively being optimized, so first-use shader/pipeline compilation may still
+cause temporary stutter while caches are populated.
+
+The renderer uses Vulkan 1.3. Recent Windows-specific work includes persistent pipeline and
+shader caches, persistent texture detile cache, asynchronous compilation, adaptive file
+read-ahead, presentation tuning and special handling for expensive first-use pipeline creation
+on integrated AMD GPUs.
+
+## Supported game revision
+
+Only the European v16 executable is supported.
 
 | Property | Value |
 | --- | --- |
 | Product code | WUP-P-AKNP |
-| Title ID | `000500001010F800` (update `0005000E1010F800`) |
+| Base title ID | `000500001010F800` |
+| Update title ID | `0005000E1010F800` |
 | Version | 16 |
 | `code/Tekken.rpx` SHA-256 | `fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019` |
 
-`cafe-recomp` refuses any other `Tekken.rpx`, and the port and its installer
-refuse a game whose executable is not the one they were built from.
+The maintainer build verifies this hash before ahead-of-time recompilation, and the packaged
+runtime verifies the player's selected game source before launch.
 
-## Requirements
+## Releases
 
-- Linux on x86-64 with AVX2 and FMA (x86-64-v3: Intel Haswell, AMD Excavator
-  or newer).
-- A Vulkan 1.3 GPU and driver with `VK_EXT_external_memory_host` and push
-  descriptors (current AMD, Intel and NVIDIA drivers).
-- To build: Git, CMake 3.20+, Ninja, Clang (or GCC 15+), Python 3, and the
-  development files of SDL 3.2 or newer, shaderc, the Vulkan loader, Vulkan
-  headers recent enough to define `VK_KHR_present_wait2` (mid-2025 or
-  newer), OpenSSL 3, zstd and zlib.
+The player-facing package follows the same workflow goal as the GOW3 Windows port: download one ZIP,
+open the launcher, choose your own game folder and press **PLAY**. Because the Wii U title uses
+PowerPC code, the first launch performs a one-time local AOT preparation from the player's own
+`code/Tekken.rpx`. The launcher shows the current stage and a progress bar during this process.
 
-On Arch Linux:
+A generic Player installation is laid out as:
 
-```bash
-sudo pacman -S --needed base-devel git cmake ninja clang python zstd zlib openssl vulkan-headers vulkan-icd-loader sdl3 shaderc
+```text
+ttt2-windows/
+├─ Tekken Tag Tournament 2.exe
+├─ Play Tekken Tag Tournament 2.exe
+├─ bin/
+│  └─ ttt2-runtime.exe        # created locally after first-run preparation
+├─ tools/
+│  ├─ prepare-player.ps1
+│  └─ source/
+├─ user/
+├─ out/
+├─ README-PLAYER.txt
+└─ BUILD-INFO.txt
 ```
 
-Other distributions package the same libraries under similar names; older
-releases such as Ubuntu 24.04 and Debian 12 ship SDL and Vulkan headers that
-are too old.
+The downloadable ZIP does **not** contain `ttt2-runtime.exe` or generated game code. If required
+compiler components are missing, the first-run preparer attempts to install them automatically
+through Windows Package Manager. This one-time setup can be large and can take several minutes.
 
-## Building
+## First run
 
-```bash
-git clone https://github.com/Petexy/Tekken-Tag-2-Recompiled.git && cd Tekken-Tag-2-Recompiled
-python3 tools/setup_deps.py                      # ZArchive and AMD's addrlib, at pinned revisions
+1. Extract the complete Windows Player ZIP.
+2. Open `Tekken Tag Tournament 2.exe`.
+3. Select the supported extracted EU v16 game folder containing `code/Tekken.rpx`.
+4. Click **PLAY / JOGAR**.
+5. Wait for the preparation progress bar to reach 100%; the game then starts automatically.
 
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-cmake --build build --target wua_extract cafe-recomp
+On later starts, `Play Tekken Tag Tournament 2.exe` skips the launcher window and uses the saved
+settings and locally prepared runtime. Player-created data stays under `user/`, including
+preparation/runtime logs and persistent caches.
 
-# The game's executables and metadata (about 70 MB per title folder) into local/wua
-build/wua_extract extract-analysis "/path/to/TEKKEN TAG 2 Wii U EDITION (EU).wua" local/wua
-# The v16 executable's code as C++ in generated/ttt2 (in the update's
-# folder, or in the game's when the update is merged into it)
-build/recomp/cafe-recomp local/wua/*_v16/code/Tekken.rpx generated/ttt2
+## Quick start on Windows
 
-cmake -B build -DTTT2_GENERATED_DIR="$PWD/generated/ttt2"
-cmake --build build --target ttt2
+### Requirements
+
+For the Player package:
+
+- Windows 11 x64
+- CPU with AVX2
+- Vulkan 1.3-capable GPU and current driver
+- a legally obtained extracted EU v16 game folder containing `code/Tekken.rpx`
+- Windows Package Manager (`winget`) if the required first-run compiler components are not already installed
+
+The launcher handles the one-time local preparation. The manual developer toolchain below is only
+needed when working on the project itself.
+
+### Manual developer build
+
+```powershell
+git clone https://github.com/xruanzin/Tekken-Tag-2-Recompiled.git
+cd Tekken-Tag-2-Recompiled
+git checkout windows-host
+
+Set-ExecutionPolicy -Scope Process Bypass
+.\build-windows.ps1 -Rpx "D:\Path\To\Game\code\Tekken.rpx"
 ```
 
-Recompiling takes a few seconds; compiling the generated code takes a few
-minutes. `local/`, `generated/`, `third_party/` and `build*/` are ignored by
-Git, so nothing derived from the game ends up in a commit; keep captures and
-dumps from the debugging options under `local/` too.
+Do not use `-Clean` for ordinary updates. The build system can reuse already compiled
+objects and generated code.
 
-## Playing
+Successful output is placed at:
 
-Run the game straight from its archive (or from a game folder):
-
-```bash
-build/ttt2 "/path/to/TEKKEN TAG 2 Wii U EDITION (EU).wua"
+```text
+build\windows\ttt2.exe
+TTT2 Launcher.exe
 ```
 
-Or install it: choose the archive and the install folder in file dialogs, or
-give them as `--install GAME FOLDER`. This copies the game (16 GB) and the
-program into that folder (a folder that is not empty gets a
-`Tekken Tag Tournament 2` folder inside it) and adds **Tekken Tag Tournament
-2** to the application menu (`--no-launcher` leaves that out). Then start it
-from the menu, or run `ttt2` without arguments; the `.wua` is no longer
-needed.
+More Windows-specific details are in [docs/WINDOWS.md](docs/WINDOWS.md).
 
-```bash
-build/ttt2 --install
-build/ttt2 --update      # after a rebuild: copies the new program into the install
+## Maintainer release build
+
+The public Player ZIP is built and published with:
+
+```powershell
+.\release-player.ps1 -Version v1.0.0 -Publish
 ```
 
-Saves go to `~/.local/share/ttt2/save` and compiled shaders to
-`~/.cache/ttt2`. F11 toggles fullscreen.
+This package contains only the generic launcher, quick-play helper and local preparation sources.
+It deliberately excludes generated game code and any locally built `ttt2-runtime.exe`.
 
-| Wii U GamePad | Keyboard |
+`release-windows.ps1` remains available for local developer/testing packages built from the
+maintainer's own RPX, but its `-Publish` path is disabled.
+
+## Launcher
+
+The Windows launcher provides:
+
+- game folder or `.wua` selection;
+- windowed/fullscreen mode and output resolution;
+- 60/120/180/240 FPS presentation;
+- internal render scale and FXAA;
+- linear, nearest, adaptive-sharp and FSR 1 scaling;
+- anisotropic filtering and sharpness;
+- audio and volume;
+- controller icon preference;
+- game/interface language;
+- asynchronous shader/pipeline compilation;
+- reduced input-lag mode.
+
+Launcher artwork and launcher-specific code live together under
+[`launcher/`](launcher/).
+
+## Performance and caches
+
+The Windows fork keeps reusable shader, Vulkan pipeline and detiled-texture caches. After the
+one-time first-run AOT preparation, normal launches reuse the locally prepared runtime and do not
+recompile the game. The first run through a stage or character combination can still be less
+smooth while new graphics work is compiled; repeated content should reuse more cached data.
+
+For performance reports, include the runtime log and describe the exact match, stage and action
+that caused the hitch. Do **not** attach game data.
+
+## Repository layout
+
+| Path | Purpose |
 | --- | --- |
-| D-pad | Arrow keys |
-| A / B / X / Y | X / Z / S / A |
-| L / R | Q / W |
-| ZL / ZR | 1 / 2 |
-| + / − | Enter / Backspace |
-| HOME | H |
-| Left stick | I / J / K / L |
+| `launcher/` | Windows launcher source, artwork and launcher helper scripts |
+| `runtime/` | Native host runtime, Cafe OS replacements, GX2/Vulkan renderer, audio/input/filesystem |
+| `recomp/` | PowerPC-to-C++ static recompiler |
+| `tools/` | Generic project/recompiler utilities |
+| `tests/` | Data-independent and differential tests |
+| `docs/` | Architecture, Windows notes and project structure |
+| `.github/` | CI and contribution metadata |
+| `build-windows.ps1` | Main Windows build entry point |
 
-Keys go by position, as on a US QWERTY keyboard. Gamepads work through SDL
-by button position, as on the Wii U: the right face button is A, the bottom
-one B, the top one X and the left one Y, and fights use them that way. In
-menus the bottom button (B, Z on the keyboard) confirms and the right one
-goes back, except with a Nintendo controller, which confirms with its A as on
-the Wii U. The icons follow the last controller used (the keyboard counts as
-a neutral one).
+See [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) for the detailed map.
 
-| Environment variable | Effect |
-| --- | --- |
-| `TTT2_SCALE=1..4` | render scale (default from the display) |
-| `TTT2_FPS=60/120/180/240` | frames shown per second (default 120 on displays of 100 Hz and more) |
-| `TTT2_FULLSCREEN=1` | start fullscreen |
-| `TTT2_AUDIO=0` | no sound |
-| `TTT2_AUDIO_VOLUME=0..100` | volume in percent (default 100) |
-| `TTT2_SAVE_DIR=<folder>` | where saves go |
-| `TTT2_CONTROLLER=playstation/nintendo/xbox` | icons and menu buttons for this kind of controller, whichever is used |
+Generated/local directories such as `build*/`, `generated/`, `third_party/` and
+`local/` are ignored and should not be committed.
 
-Debugging variables are listed in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#running-the-port).
+## Development
 
-## How it works
+Useful technical documentation:
 
-- `recomp/`: `cafe-recomp` loads the RPX, finds all 205,200 function entry
-  points and writes the 79,564 reachable ones as C++ functions (`--all`
-  writes every one). Guest calls are C++ calls; indirect calls go through an
-  address table.
-- `runtime/src/os/`: the Cafe OS libraries the game imports (threads,
-  synchronisation, memory, file system, saves, input, sound mixing), written
-  natively.
-- `runtime/src/gx2/` and `runtime/src/gpu/`: GX2 writes real GPU command
-  buffers, which a command processor executes; the Vulkan renderer
-  (`runtime/src/gpu/vulkan/`) translates the GPU's shaders to SPIR-V
-  (`runtime/src/latte/`), interpolates frames and paces presentation.
-- `runtime/src/title/`: what this game shows differently on a computer: the
-  menu buttons, the icon sets, texts and the title screen, made at start-up
-  from the game's archives (their format is described in
-  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#presentation-on-a-computer)).
-- `tests/`: a memory-model test, tests of reading split archives and of the
-  game's file formats and the icons and texts made from them, and
-  differential tests that run every instruction form the game uses against
-  Dolphin's PowerPC interpreter.
+- [Windows host notes](docs/WINDOWS.md)
+- [Runtime and renderer architecture](docs/ARCHITECTURE.md)
+- [Repository structure](docs/PROJECT_STRUCTURE.md)
+- [Contribution guidelines](.github/CONTRIBUTING.md)
 
-### Changing the game
+## Credits
 
-A generated function `sub_<address>` can be replaced by defining it in a
-`.cpp` file added to the `ttt2` target (`target_sources(ttt2 PRIVATE ...)` in
-`CMakeLists.txt`); every call, direct or through a function pointer, then
-reaches the replacement, and `sub_<address>_orig` is still the original:
+This Windows fork exists because of the work done by the original project and the broader Wii U
+reverse-engineering community.
 
-```cpp
-#include "cafe/ppc_ops.h"
+- **Petexy / Tekken-Tag-2-Recompiled** — original Linux port, static recompilation design and
+  the core TTT2 runtime this fork is based on.
+- **Upstream contributors** — fixes, testing and continued work on the original project.
+- **xruanzin** — Windows port, Windows launcher, host integration and Windows-focused
+  performance/compatibility work in this fork.
+- **OpenAI ChatGPT** — AI-assisted code review, debugging, Windows launcher/UI refinements,
+  performance investigation, repository organization and documentation for this Windows fork.
+- **decaf-emu** — Wii U/GX2 research and AMD address-library work used by the runtime.
+- **Dolphin** — PowerPC interpreter/reference work used by the project's instruction tests.
+- **XenonRecomp** and **N64Recomp** — important prior art for function-level static recompilation.
 
-PPC_FUNC(sub_0123ABCD_orig);
-PPC_FUNC(sub_0123ABCD) {
-    // ... before
-    sub_0123ABCD_orig(ctx, base);
-    // ... after
-}
-```
-
-## Tests
-
-```bash
-cmake --build build      # also builds the tests
-ctest --test-dir build
-```
-
-runs `memory_model_test`, `wua_layers_test` and `title_test`. The
-differential tests (`semantics_test`, `control_flow_test`) also need `fmt`,
-the game's `Tekken.rpx` (by default
-`local/wua/000500001010f800_v16/code/Tekken.rpx`; otherwise configure with
-`-DTTT2_RPX=<path>`), and a partial checkout of Dolphin:
-
-```bash
-git clone --filter=blob:none --no-checkout https://github.com/dolphin-emu/dolphin.git third_party/ref/dolphin
-git -C third_party/ref/dolphin sparse-checkout set --no-cone \
-  /Source/Core/Core/PowerPC/Interpreter/ /Source/Core/Core/PowerPC/Gekko.h \
-  /Source/Core/Core/PowerPC/PowerPC.h '/Source/Core/Core/PowerPC/ConditionRegister.*' \
-  /Source/Core/Common/BitField.h /Source/Core/Common/BitUtils.h /Source/Core/Common/CommonTypes.h \
-  '/Source/Core/Common/FloatUtils.*' /Source/Core/Common/Inline.h /Source/Core/Common/Swap.h
-git -C third_party/ref/dolphin checkout 771fb154059c5812d6a715a23226249cc42877a2
-cmake -B build && cmake --build build && ctest --test-dir build
-```
-
-They build Dolphin's interpreter (GPL-2.0 or later) into the test programs;
-nothing of Dolphin is stored in this repository.
+Third-party dependencies retain their own licenses.
 
 ## License
 
-This repository's code is under the [MIT License](LICENSE). It does not cover
-the game, or anything generated from it.
+Repository code is provided under the [MIT License](LICENSE), subject to the licenses of
+third-party components.
 
-Fetched by `tools/setup_deps.py`, under their own licenses:
-[ZArchive](https://github.com/Exzap/ZArchive) (MIT-0) and AMD's address
-library ([decaf-emu/addrlib](https://github.com/decaf-emu/addrlib), MIT,
-built into the `ttt2` program). The port also links SDL3 (zlib), shaderc
-(Apache-2.0), the Vulkan loader (Apache-2.0), OpenSSL (Apache-2.0), zstd
-(BSD) and zlib.
-
-## Acknowledgements
-
-- [Cemu](https://github.com/cemu-project/Cemu) and
-  [decaf-emu](https://github.com/decaf-emu/decaf-emu), whose reverse
-  engineering of the Wii U's system libraries and GPU documented much of the
-  behaviour reimplemented here (structure layouts, register values, formats,
-  GX2's surface layout rules). This repository's code is its own.
-- [Dolphin](https://github.com/dolphin-emu/dolphin), whose hardware-tested
-  PowerPC interpreter is the reference the instruction tests compare
-  against, and whose hardware research measured the processor's estimate
-  tables.
-- [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) and
-  [N64Recomp](https://github.com/N64Recomp/N64Recomp), for showing how far
-  function-level static recompilation can go.
+The license does **not** grant rights to TEKKEN, Wii U game data or any code/assets generated
+from a user's copy of the game.

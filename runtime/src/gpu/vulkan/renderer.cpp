@@ -5,6 +5,7 @@
 
 #include "gpu/vulkan/png.h"
 #include "host/window.h"
+#include "host/platform.h"
 
 #include "cafe/runtime.h"
 
@@ -28,15 +29,76 @@ double now_seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-constexpr VkDeviceSize kRingSize = 256ull << 20;
+constexpr VkDeviceSize kMiB = 1ull << 20;
+constexpr VkDeviceSize kGiB = 1ull << 30;
+
+VkDeviceSize adaptive_upload_ring_size(const Context& ctx) {
+    const uint64_t total = host::system_memory_total_bytes();
+    const uint64_t available = host::system_memory_available_bytes();
+
+    VkDeviceSize target = 192ull * kMiB;
+    if (total >= 12ull * kGiB) target = 256ull * kMiB;
+    if (total >= 16ull * kGiB) target = 384ull * kMiB;
+    if (total >= 24ull * kGiB) target = 512ull * kMiB;
+    if (total >= 48ull * kGiB) target = 768ull * kMiB;
+
+    // Integrated GPUs share system memory. Give them a healthy staging ring
+    // without stealing so much RAM that the title or the driver starts paging.
+    if (ctx.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        target = std::min<VkDeviceSize>(target, 384ull * kMiB);
+    }
+
+    // Never consume more than roughly one eighth of currently available RAM.
+    if (available != 0) {
+        const VkDeviceSize pressure_cap =
+            std::max<VkDeviceSize>(128ull * kMiB, (available / 8 / (32ull * kMiB)) * (32ull * kMiB));
+        target = std::min(target, pressure_cap);
+    }
+    return std::clamp<VkDeviceSize>(target, 128ull * kMiB, 768ull * kMiB);
+}
+
+uint64_t device_local_heap_bytes(const Context& ctx) {
+    uint64_t bytes = 0;
+    for (uint32_t i = 0; i < ctx.memory.memoryHeapCount; ++i) {
+        if (ctx.memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            bytes += ctx.memory.memoryHeaps[i].size;
+        }
+    }
+    return bytes;
+}
 
 } // namespace
 
 Renderer::Renderer() {
     ctx_.init(host::vulkan_instance_extensions());
+    {
+        char gpu_info[512]{};
+        std::snprintf(gpu_info, sizeof(gpu_info),
+                      "GPU device=%s vendor=0x%04X type=%u driver=0x%08X",
+                      ctx_.properties.deviceName, ctx_.properties.vendorID,
+                      static_cast<unsigned>(ctx_.properties.deviceType),
+                      ctx_.properties.driverVersion);
+        cafe::diagnostic_trace(gpu_info);
+    }
     init_formats(ctx_.physical);
     guest_.init(ctx_);
-    ring_.init(ctx_, kRingSize);
+    const VkDeviceSize upload_ring_size = adaptive_upload_ring_size(ctx_);
+    ring_.init(ctx_, upload_ring_size);
+    {
+        const uint64_t total = host::system_memory_total_bytes();
+        const uint64_t available = host::system_memory_available_bytes();
+        const uint64_t local_heap = device_local_heap_bytes(ctx_);
+        char memory_info[320]{};
+        std::snprintf(memory_info, sizeof(memory_info),
+                      "MEMORY policy=automatic system_total=%lluMB system_available=%lluMB "
+                      "device_local=%lluMB upload_ring=%lluMB gpu_type=%u",
+                      static_cast<unsigned long long>(total >> 20),
+                      static_cast<unsigned long long>(available >> 20),
+                      static_cast<unsigned long long>(local_heap >> 20),
+                      static_cast<unsigned long long>(upload_ring_size >> 20),
+                      static_cast<unsigned>(ctx_.properties.deviceType));
+        cafe::diagnostic_trace(memory_info);
+    }
     VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VK_CHECK(vkCreateSemaphore(ctx_.device, &sci, nullptr, &acquired_));
 
@@ -72,12 +134,84 @@ Renderer::Renderer() {
         scale_ = std::clamp((dh + 719) / 720, 1u, 4u);
     }
     std::fprintf(stderr, "ttt2: GPU: rendering at %ux%u (scale %u)\n", 1280 * scale_, 720 * scale_, scale_);
+    {
+        char render_info[192]{};
+        std::snprintf(render_info, sizeof(render_info),
+                      "GPU render_size=%ux%u scale=%u",
+                      1280 * scale_, 720 * scale_, scale_);
+        cafe::diagnostic_trace(render_info);
+    }
     compiler_ = shaderc_compiler_initialize();
+    if (const char* value = std::getenv("TTT2_ASYNC_SHADERS")) {
+        async_shaders_ = *value != '\0' && *value != '0';
+    }
+    if (async_shaders_) {
+        const uint32_t logical = std::max(1u, std::thread::hardware_concurrency());
+        const uint32_t workers = logical >= 6 ? 2u : 1u;
+        std::fprintf(stderr, "ttt2: GPU: asynchronous shader compilation enabled (%u workers)\n", workers);
+        char shader_workers[128]{};
+        std::snprintf(shader_workers, sizeof(shader_workers),
+                      "GPU shader_compile_workers=%u logical_cpus=%u", workers, logical);
+        cafe::diagnostic_trace(shader_workers);
+        shader_compile_threads_.reserve(workers);
+        for (uint32_t i = 0; i < workers; ++i) {
+            shader_compile_threads_.emplace_back([this] { shader_worker_main(); });
+        }
+    }
     load_pipeline_cache();
+    // Pipeline creation is a separate expensive driver operation. Keep it
+    // away from the render thread even when shaderc itself is synchronous.
+    async_pipelines_ = true;
+    if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
+        async_pipelines_ = *value != '\0' && *value != '0';
+    }
+    // Minimize time-to-first-frame on a cold cache. Once the persistent
+    // Vulkan cache is warm, later launches use fully optimized pipelines.
+    // This is especially important for the zero-install dynamic Player,
+    // where CPU translation is already part of cold-start latency.
+    fast_pipelines_ = !pipeline_cache_warm_;
+    if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
+        fast_pipelines_ = *value != '\0' && *value != '0';
+    }
+    cafe::diagnostic_trace(fast_pipelines_
+                               ? "GPU pipeline mode=fast-create"
+                               : "GPU pipeline mode=fully-optimized");
+    if (const char* value = std::getenv("TTT2_NATIVE_EFFECT_BUFFERS")) {
+        native_effect_buffers_ = *value != '\0' && *value != '0';
+    }
+    if (async_pipelines_) {
+        std::fprintf(stderr, "ttt2: GPU: asynchronous Vulkan pipeline compilation enabled%s\n",
+                     fast_pipelines_ ? " (fast-create)" : "");
+        pipeline_compile_thread_ = std::thread([this] { pipeline_worker_main(); });
+    }
+    if (native_effect_buffers_ && scale_ > 1) {
+        std::fprintf(stderr, "ttt2: GPU: intermediate effect buffers stay at native resolution\n");
+    }
     surface_ = host::create_vulkan_surface(ctx_.instance);
     init_interpolation();
     start_presenter();
     window_start_ = now_seconds();
+}
+
+Renderer::~Renderer() {
+    {
+        std::lock_guard lock(shader_compile_mutex_);
+        shader_compile_stop_ = true;
+    }
+    shader_compile_cv_.notify_all();
+    for (std::thread& worker : shader_compile_threads_) {
+        if (worker.joinable()) worker.join();
+    }
+
+    {
+        std::lock_guard lock(pipeline_compile_mutex_);
+        pipeline_compile_stop_ = true;
+    }
+    pipeline_compile_cv_.notify_all();
+    if (pipeline_compile_thread_.joinable()) pipeline_compile_thread_.join();
+
+    save_pipeline_cache();
+    if (compiler_ != nullptr) shaderc_compiler_release(compiler_);
 }
 
 // ------------------------------------------------------------- commands
@@ -92,7 +226,19 @@ VkCommandBuffer Renderer::cmd() {
             if (vkGetQueryPoolResults(ctx_.device, busy_pool_, 2 * slot_, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) ==
                     VK_SUCCESS &&
                 ts[1] >= ts[0]) {
-                busy_seconds_ += (ts[1] - ts[0]) * ctx_.properties.limits.timestampPeriod * 1e-9;
+                const double busy = (ts[1] - ts[0]) * ctx_.properties.limits.timestampPeriod * 1e-9;
+                busy_seconds_ += busy;
+                static const double auto_profile_ms = [] {
+                    const char* value = std::getenv("TTT2_AUTO_PROFILE_MS");
+                    return value ? std::max(std::atof(value), 0.0) : 0.0;
+                }();
+                if (auto_profile_ms > 0.0 && busy * 1000.0 >= auto_profile_ms &&
+                    profile_frame_ == UINT64_MAX && !profiling_ && !auto_profile_pending_) {
+                    auto_profile_pending_ = true;
+                    std::fprintf(stderr,
+                                 "ttt2: gpu: slow submission %.2f ms; profiling the next title frame\n",
+                                 busy * 1000.0);
+                }
             }
         }
         cmd_ = slot.cmd;
@@ -169,9 +315,12 @@ void Renderer::sync() { submit(true); }
 
 void Renderer::barrier() {
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    constexpr VkPipelineStageFlags2 kFrameStages =
+        VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    mb.srcStageMask = kFrameStages;
     mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    mb.dstStageMask = kFrameStages;
     mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
     VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     di.memoryBarrierCount = 1;
@@ -220,6 +369,12 @@ void Renderer::end_rendering() {
     rendering_ = false;
     bound_pipeline_ = nullptr;
     barrier();
+}
+
+void Renderer::end_rendering_and_barrier() {
+    const bool was_rendering = rendering_;
+    end_rendering();
+    if (!was_rendering) barrier();
 }
 
 Image Renderer::create_image(VkFormat format, VkImageAspectFlags aspect, uint32_t width, uint32_t height,
@@ -310,8 +465,7 @@ void Renderer::copy_to_scan_buffer(const gx2::ColorBuffer& buffer, uint32_t scan
                                 VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_IMAGE_VIEW_TYPE_2D);
     }
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkImageCopy region{};
     region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -338,11 +492,10 @@ void Renderer::save_image(const Image& img, const std::string& path) {
     VkDeviceSize offset = 0;
     upload(bytes, 16, offset);
     const uint8_t* data = ring_.mapped() + offset;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkBufferImageCopy region{};
     region.bufferOffset = offset;
-    region.imageSubresource = {depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageSubresource = {static_cast<VkImageAspectFlags>(depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
     region.imageExtent = {img.width, img.height, 1};
     vkCmdCopyImageToBuffer(cmd(), img.image, VK_IMAGE_LAYOUT_GENERAL, ring_.buffer(), 1, &region);
     submit(true);
@@ -417,11 +570,11 @@ void Renderer::save_sequence_image(uint32_t n) {
 
 // ------------------------------------------------------------ profiling
 
-void Renderer::profile_mark(const char* what, uint32_t a, uint32_t b, uint32_t c) {
+void Renderer::profile_mark(const char* what, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
     if (!profiling_ || profile_marks_.size() >= 8191) return;
     vkCmdWriteTimestamp2(cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, profile_pool_,
                          static_cast<uint32_t>(profile_marks_.size()));
-    profile_marks_.push_back({what, a, b, c});
+    profile_marks_.push_back({what, a, b, c, d});
 }
 
 void Renderer::profile_report() {
@@ -456,8 +609,8 @@ void Renderer::profile_report() {
     std::sort(items.begin(), items.end(), [](const Item& x, const Item& y) { return x.ms > y.ms; });
     for (size_t i = 0; i < std::min<size_t>(items.size(), 40); ++i) {
         const ProfileMark& m = profile_marks_[items[i].index];
-        std::fprintf(stderr, "profile:   #%-4u %7.3f ms  %s 0x%08X 0x%08X 0x%08X\n", items[i].index, items[i].ms, m.what,
-                     m.a, m.b, m.c);
+        std::fprintf(stderr, "profile:   #%-4u %7.3f ms  %s 0x%08X 0x%08X 0x%08X 0x%08X\n",
+                     items[i].index, items[i].ms, m.what, m.a, m.b, m.c, m.d);
     }
 }
 
@@ -468,6 +621,20 @@ void Renderer::swap() {
         submit(true);
         profile_report();
         profiling_ = false;
+    }
+    if (auto_profile_pending_) {
+        auto_profile_pending_ = false;
+        profile_frame_ = frame_number_ + 1;
+        if (profile_pool_ == VK_NULL_HANDLE) {
+            VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qci.queryCount = 8192;
+            VK_CHECK(vkCreateQueryPool(ctx_.device, &qci, nullptr, &profile_pool_));
+        }
+        vkCmdResetQueryPool(cmd(), profile_pool_, 0, 8192);
+        profile_marks_.clear();
+        profiling_ = true;
+        profile_mark("start");
     }
     static const double profile_at = [] {
         const char* v = std::getenv("TTT2_PROFILE_AT");
@@ -500,18 +667,56 @@ void Renderer::swap() {
     ++frame_number_;
     ++frames_;
     const double t = now_seconds();
+    // Persist newly compiled pipelines quickly. This matters especially on
+    // Windows, where a crash/Alt-F4 shortly after entering a new stage used
+    // to lose all newly learned driver pipelines.
+    static double last_cache_save = t;
+    if (new_pipelines_.load(std::memory_order_acquire) != 0 && t - last_cache_save >= 2.0) {
+        save_pipeline_cache();
+        last_cache_save = t;
+    }
     if (t - window_start_ >= 10.0) {
         save_pipeline_cache();
+
+        const double frame_count = static_cast<double>(std::max<uint64_t>(frames_, 1));
+        const double fps = frames_ / (t - window_start_);
+        const double draws_per_frame = double(draws_) / frame_count;
+        const double skipped_per_frame = double(skipped_draws_) / frame_count;
+        const double waits_per_frame = double(waits_) / frame_count;
+        const double wait_ms = wait_seconds_ * 1000.0 / frame_count;
+        const double busy_ms = busy_seconds_ * 1000.0 / frame_count;
+        const double replay_ms = replay_seconds_ * 1000.0 / frame_count;
+        const double match_ms = match_seconds_ * 1000.0 / frame_count;
+        const double shader_wait_ms = shader_wait_seconds_ * 1000.0 / frame_count;
+        const double pipeline_wait_ms = pipeline_wait_seconds_ * 1000.0 / frame_count;
+        const double shader_waits_per_frame = double(shader_waits_) / frame_count;
+        const double pipeline_waits_per_frame = double(pipeline_waits_) / frame_count;
+
+        // last_run.log can be unavailable on GUI-subsystem Windows launches.
+        // Mirror the useful performance counters into the raw boot trace,
+        // whose Win32 writer is independent of stdio.
+        char perf[768]{};
+        std::snprintf(
+            perf, sizeof(perf),
+            "PERF fps=%.1f draws/frame=%.0f skipped/frame=%.0f gpu_waits/frame=%.1f "
+            "gpu_wait_ms/frame=%.2f gpu_busy_ms/frame=%.2f shader_waits/frame=%.2f "
+            "shader_wait_ms/frame=%.2f pipeline_waits/frame=%.2f pipeline_wait_ms/frame=%.2f "
+            "targets=%zu textures=%zu shaders=%zu pipelines=%zu replay_ms/frame=%.2f match_ms/frame=%.2f",
+            fps, draws_per_frame, skipped_per_frame, waits_per_frame, wait_ms, busy_ms,
+            shader_waits_per_frame, shader_wait_ms, pipeline_waits_per_frame, pipeline_wait_ms,
+            targets_.size(), textures_.size(), shaders_.size(), pipelines_.size(),
+            replay_ms, match_ms);
+        cafe::diagnostic_trace(perf);
+
         std::fprintf(stderr, "ttt2: gpu: %.1f frames/s, %.0f draws per frame (%.0f skipped), %zu targets, %zu textures, "
                              "%zu shaders, %zu pipelines; %.1f GPU waits, %.1f ms waiting (%.1f ms GPU busy) per frame; %llu/%llu extra frames blended (%llu skipped: GPU behind), %.1f MB recorded; replay %.1f ms (matching %.1f)\n",
-                     frames_ / (t - window_start_), double(draws_) / std::max<uint64_t>(frames_, 1),
-                     double(skipped_draws_) / std::max<uint64_t>(frames_, 1), targets_.size(), textures_.size(),
-                     shaders_.size(), pipelines_.size(), double(waits_) / std::max<uint64_t>(frames_, 1),
-                     wait_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1), busy_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1),
+                     fps, draws_per_frame, skipped_per_frame, targets_.size(), textures_.size(),
+                     shaders_.size(), pipelines_.size(), waits_per_frame,
+                     wait_ms, busy_ms,
                      static_cast<unsigned long long>(blended_replays_),
                      static_cast<unsigned long long>(replays_), static_cast<unsigned long long>(skipped_replays_),
                      frame_records_[current_record_ ^ 1].used / 1e6,
-                     replay_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1), match_seconds_ * 1000.0 / std::max<uint64_t>(frames_, 1));
+                     replay_ms, match_ms);
         if (!swap_delays_.empty()) {
             std::sort(swap_delays_.begin(), swap_delays_.end());
             const auto pct = [&](size_t p) { return swap_delays_[std::min(swap_delays_.size() - 1, swap_delays_.size() * p / 100)]; };
@@ -526,7 +731,9 @@ void Renderer::swap() {
         replays_ = blended_replays_ = skipped_replays_ = 0;
         window_start_ = t;
         frames_ = draws_ = skipped_draws_ = waits_ = 0;
+        shader_waits_ = pipeline_waits_ = 0;
         wait_seconds_ = busy_seconds_ = 0;
+        shader_wait_seconds_ = pipeline_wait_seconds_ = 0;
     }
 }
 

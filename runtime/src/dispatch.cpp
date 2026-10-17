@@ -1,11 +1,16 @@
+#include "cafe/dynamic.h"
 #include "cafe/generated.h"
 #include "cafe/layout.h"
 #include "cafe/runtime.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
+
+extern "C" cafe::PPCFunc* cafe_ppc_lookup(uint32_t address);
 
 namespace cafe {
 namespace {
@@ -62,6 +67,26 @@ void build_dispatch_table() {
     }
 }
 
+PPCFunc* find_registered_host_function(uint32_t address) {
+    if (address < layout::kHostThunkBase || address >= layout::kHostThunkLimit ||
+        g_slots.empty()) {
+        return nullptr;
+    }
+    for (size_t i = home(address);; i = (i + 1) & g_mask) {
+        const Slot& slot = g_slots[i];
+        if (slot.address == address) return slot.function;
+        if (slot.address == 0) return nullptr;
+    }
+}
+
+void execute_guest(PPCContext& ctx, uint32_t address) {
+    if (dynamic::enabled()) {
+        dynamic::execute(ctx, guest_base(), address);
+        return;
+    }
+    cafe_ppc_lookup(address)(ctx, guest_base());
+}
+
 uint32_t register_host_function(PPCFunc* function, const char* name) {
     std::lock_guard lock(g_host_mutex);
     if (g_next_host_thunk >= layout::kHostThunkLimit) {
@@ -100,5 +125,20 @@ extern "C" cafe::PPCFunc* cafe_ppc_lookup(uint32_t address) {
                   "function",
                   address);
         }
+    }
+}
+
+
+extern "C" uint32_t cafe_ppc_runtime_option(uint32_t option) {
+    switch (option) {
+    case 1: {
+        static const bool enabled = [] {
+            const char* value = std::getenv("TTT2_REDUCE_INPUT_LAG");
+            return value && *value && std::strcmp(value, "0") != 0;
+        }();
+        return enabled ? 1u : 0u;
+    }
+    default:
+        return 0;
     }
 }

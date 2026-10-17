@@ -13,6 +13,7 @@
 #include "gpu/gpu.h"
 #include "gpu/latte.h"
 #include "host/window.h"
+#include "host/platform.h"
 #include "os/kernel.h"
 
 #include "cafe/guest.h"
@@ -200,7 +201,7 @@ void retire_later(const Retirement& r) {
 
 void retire(uint64_t timestamp);
 void retirement_main() {
-    pthread_setname_np(pthread_self(), "gpu retire");
+    host::set_thread_name("gpu retire");
     for (;;) {
         Retirement r;
         {
@@ -544,7 +545,8 @@ void retire(uint64_t timestamp) {
 }
 
 void command_processor_main() {
-    pthread_setname_np(pthread_self(), "gpu");
+    host::set_thread_name("gpu");
+    host::set_thread_high_priority();
     for (;;) {
         Submission s;
         {

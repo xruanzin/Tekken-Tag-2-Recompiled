@@ -25,6 +25,9 @@ extern "C" {
 [[noreturn]] void cafe_ppc_null_call(::cafe::PPCContext& ctx, uint32_t address);
 [[noreturn]] void cafe_ppc_bad_return(::cafe::PPCContext& ctx, uint32_t expected);
 uint64_t cafe_ppc_timebase(void);
+// Native, version-validated patches used by generated code.
+// 1 = reduce TTT2's forced input delay (EUR/USA v16 address 0x02EF885C).
+uint32_t cafe_ppc_runtime_option(uint32_t option);
 }
 
 // ---------------------------------------------------------------------------

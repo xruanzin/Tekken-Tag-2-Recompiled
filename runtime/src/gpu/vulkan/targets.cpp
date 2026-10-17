@@ -45,7 +45,10 @@ uint32_t strip_swizzle(uint32_t address, uint32_t tile_mode) {
 // texture-compression targets and the GamePad screen are other sizes.
 bool Renderer::upscaled_size(uint32_t width, uint32_t height) const {
     if (scale_ <= 1 || width < 64) return false;
-    for (uint32_t k = 0; k < 4; ++k) {
+    const uint32_t full_height = ((720u + 15) / 16) * 16;
+    if (height == full_height) return true;
+    if (native_effect_buffers_) return false;
+    for (uint32_t k = 1; k < 4; ++k) {
         if (height == ((720u >> k) + 15) / 16 * 16) return true;
     }
     return false;
@@ -154,8 +157,7 @@ Target* Renderer::depth_target(const gx2::DepthBuffer& buffer) {
 void Renderer::clear_color(const Registers&, const gx2::ColorBuffer& buffer, const float rgba[4]) {
     Target* t = color_target(buffer);
     if (t == nullptr) return;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkClearColorValue value{};
     const uint32_t type = (t->format >> 8) & 0xF;
     for (int i = 0; i < 4; ++i) {
@@ -184,8 +186,7 @@ void Renderer::clear_depth_stencil(const Registers&, const gx2::DepthBuffer& buf
     if (flags & 2) aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
     aspect &= t->image.aspect;
     if (aspect == 0) return;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkClearDepthStencilValue value{std::clamp(depth, 0.0f, 1.0f), stencil & 0xFF};
     VkImageSubresourceRange range{aspect, 0, 1, 0, 1};
     vkCmdClearDepthStencilImage(cmd(), t->image.image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
@@ -204,8 +205,7 @@ void Renderer::clear_depth_stencil(const Registers&, const gx2::DepthBuffer& buf
 void Renderer::copy_target_region(const Target& src, const Image& dst, uint32_t dst_scale, uint32_t dst_layer,
                                   uint32_t width, uint32_t height) {
     note_target_read(&src);
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     const VkImageAspectFlags aspect = dst.aspect & src.image.aspect;
     if (src.scale == dst_scale) {
         VkImageCopy region{};

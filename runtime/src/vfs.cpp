@@ -3,10 +3,8 @@
 #include "cafe/runtime.h"
 #include "title/archive.h"
 #include "wua.h"
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "host/file.h"
+#include "host/platform.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -38,7 +36,7 @@ std::map<std::string, std::shared_ptr<const title::archive::Rebuilt>> g_overlays
 struct File {
     bool archive = false;
     ZArchiveNodeHandle node = ZARCHIVE_INVALID_NODE;
-    int fd = -1;
+    std::shared_ptr<host::RandomAccessFile> host_file;
     uint64_t size = 0;
     uint64_t position = 0;
     bool readable = false;
@@ -157,46 +155,47 @@ fs::path game_host_path(const std::string& relative) {
     return host_resolve(g_source.directory, components(relative));
 }
 
-Status from_errno(int error) {
-    switch (error) {
-    case ENOENT: return kNotFound;
-    case EISDIR: return kNotFile;
-    case ENOTDIR: return kNotDir;
-    case EACCES: case EPERM: case EROFS: return kPermissionError;
-    case EEXIST: return kExists;
-    case ENOSPC: return kStorageFull;
-    case EMFILE: case ENFILE: return kMax;
-    default: return kMediaError;
-    }
+Status from_error(const std::error_code& error) {
+    if (!error) return kOk;
+    if (error == std::errc::no_such_file_or_directory) return kNotFound;
+    if (error == std::errc::not_a_directory) return kNotDir;
+    if (error == std::errc::is_a_directory) return kNotFile;
+    if (error == std::errc::permission_denied || error == std::errc::read_only_file_system) return kPermissionError;
+    if (error == std::errc::file_exists) return kExists;
+    if (error == std::errc::no_space_on_device) return kStorageFull;
+    if (error == std::errc::too_many_files_open || error == std::errc::too_many_files_open_in_system) return kMax;
+    return kMediaError;
 }
 
 Status open_host(const fs::path& path, std::string_view mode, int32_t& handle) {
     File file;
-    int flags = 0;
     const bool plus = mode.find('+') != std::string_view::npos;
+    host::FileOptions options;
     switch (mode.empty() ? 'r' : mode[0]) {
-    case 'r': flags = plus ? O_RDWR : O_RDONLY; file.readable = true; file.writable = plus; break;
-    case 'w': flags = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC; file.writable = true; file.readable = plus; break;
-    case 'a': flags = (plus ? O_RDWR : O_WRONLY) | O_CREAT; file.writable = true; file.append = true; file.readable = plus; break;
+    case 'r': options.read = true; options.write = plus; file.readable = true; file.writable = plus; break;
+    case 'w': options.read = plus; options.write = true; options.create = true; options.truncate = true; file.writable = true; file.readable = plus; break;
+    case 'a': options.read = plus; options.write = true; options.create = true; file.writable = true; file.append = true; file.readable = plus; break;
     default: return kAccessError;
     }
-    struct stat st;
-    if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return kNotFile;
-    file.fd = ::open(path.c_str(), flags | O_CLOEXEC, 0644);
-    if (file.fd < 0) return from_errno(errno);
-    fstat(file.fd, &st);
-    file.size = static_cast<uint64_t>(st.st_size);
+    std::error_code ec;
+    if (fs::is_directory(path, ec)) return kNotFile;
+    file.host_file = host::RandomAccessFile::open(path, options, ec);
+    if (!file.host_file) return from_error(ec);
+    file.size = file.host_file->size(ec);
+    if (ec) return from_error(ec);
     handle = g_next_handle++;
-    g_files[handle] = file;
+    g_files[handle] = std::move(file);
     return kOk;
 }
 
 Status stat_host(const fs::path& path, Stat& stat) {
-    struct stat st;
-    if (::stat(path.c_str(), &st) != 0) return from_errno(errno);
-    stat.directory = S_ISDIR(st.st_mode);
-    stat.size = stat.directory ? 0 : static_cast<uint64_t>(st.st_size);
-    return kOk;
+    std::error_code ec;
+    const fs::file_status status = fs::status(path, ec);
+    if (ec) return from_error(ec);
+    if (!fs::exists(status)) return kNotFound;
+    stat.directory = fs::is_directory(status);
+    stat.size = stat.directory ? 0 : fs::file_size(path, ec);
+    return ec ? from_error(ec) : kOk;
 }
 
 Status list_host(const fs::path& path, Dir& dir) {
@@ -215,13 +214,12 @@ Status list_host(const fs::path& path, Dir& dir) {
 Status open_underlying(const std::string& relative, File& file) {
     if (!g_source.archive) {
         const fs::path path = game_host_path(relative);
-        struct stat st;
-        if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return kNotFile;
-        file.fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (file.fd < 0) return from_errno(errno);
-        fstat(file.fd, &st);
-        file.size = static_cast<uint64_t>(st.st_size);
-        return kOk;
+        std::error_code ec;
+        if (fs::is_directory(path, ec)) return kNotFile;
+        file.host_file = host::RandomAccessFile::open(path, {true, false, false, false}, ec);
+        if (!file.host_file) return from_error(ec);
+        file.size = file.host_file->size(ec);
+        return ec ? from_error(ec) : kOk;
     }
     const ZArchiveNodeHandle node = wua::find(*g_source.archive, g_source.layers, relative);
     if (node == ZARCHIVE_INVALID_NODE) return kNotFound;
@@ -234,14 +232,7 @@ Status open_underlying(const std::string& relative, File& file) {
 
 uint64_t read_underlying(const File& file, uint64_t position, uint64_t size, void* buffer) {
     if (file.archive) return g_source.archive->ReadFromFile(file.node, position, size, buffer);
-    uint64_t transferred = 0;
-    while (transferred < size) {
-        const ssize_t n = ::pread(file.fd, static_cast<uint8_t*>(buffer) + transferred, size - transferred,
-                                  static_cast<off_t>(position + transferred));
-        if (n <= 0) break;
-        transferred += static_cast<uint64_t>(n);
-    }
-    return transferred;
+    return file.host_file ? file.host_file->read_at(position, buffer, size) : 0;
 }
 
 // The whole of a game file, or its start, without overlays.
@@ -250,7 +241,6 @@ std::optional<std::vector<uint8_t>> read_underlying(const std::string& relative,
     if (open_underlying(relative, file) != kOk) return std::nullopt;
     std::vector<uint8_t> data(std::min(file.size, limit));
     const uint64_t n = read_underlying(file, 0, data.size(), data.data());
-    if (file.fd >= 0) ::close(file.fd);
     if (n != data.size()) return std::nullopt;
     return data;
 }
@@ -276,9 +266,9 @@ void open_game(const fs::path& source) {
         return;
     }
     g_source.archive.reset(ZArchiveReader::OpenFromFile(source));
-    if (!g_source.archive) fatal("cannot open game archive %s", source.c_str());
+    if (!g_source.archive) fatal("cannot open game archive %s", host::path_string(source).c_str());
     g_source.layers = wua::game_layers(*g_source.archive);
-    if (g_source.layers.empty()) fatal("%s does not contain a title with code/Tekken.rpx", source.c_str());
+    if (g_source.layers.empty()) fatal("%s does not contain a title with code/Tekken.rpx", host::path_string(source).c_str());
     if (g_source.layers.size() > 1) {
         std::string order;
         for (const std::string& layer : g_source.layers) order += (order.empty() ? "" : " over ") + layer;
@@ -349,7 +339,6 @@ Status close_file(int32_t handle) {
     std::lock_guard lock(g_mutex);
     const auto it = g_files.find(handle);
     if (it == g_files.end()) return kFatal;
-    if (it->second.fd >= 0) ::close(it->second.fd);
     g_files.erase(it);
     return kOk;
 }
@@ -401,16 +390,11 @@ Status write_file(int32_t handle, const void* buffer, uint64_t size, std::option
     const auto it = g_files.find(handle);
     if (it == g_files.end()) return kFatal;
     File& file = it->second;
-    if (!file.writable || file.fd < 0) return kAccessError;
+    if (!file.writable || !file.host_file) return kAccessError;
     if (position) file.position = *position;
     if (file.append) file.position = file.size;
-    transferred = 0;
-    while (transferred < size) {
-        const ssize_t n = ::pwrite(file.fd, static_cast<const uint8_t*>(buffer) + transferred,
-                                   size - transferred, static_cast<off_t>(file.position + transferred));
-        if (n < 0) return from_errno(errno);
-        transferred += static_cast<uint64_t>(n);
-    }
+    transferred = file.host_file->write_at(file.position, buffer, size);
+    if (transferred != size) return kMediaError;
     file.position += transferred;
     file.size = std::max(file.size, file.position);
     return kOk;
@@ -445,7 +429,7 @@ Status flush_file(int32_t handle) {
     std::lock_guard lock(g_mutex);
     const auto it = g_files.find(handle);
     if (it == g_files.end()) return kFatal;
-    if (it->second.fd >= 0) ::fsync(it->second.fd);
+    if (it->second.host_file && !it->second.host_file->flush()) return kMediaError;
     return kOk;
 }
 
@@ -475,7 +459,7 @@ Status make_dir(std::string_view path) {
     const fs::path host = host_resolve(g_save_root, r.save_parts);
     std::error_code ec;
     if (fs::exists(host, ec)) return kExists;
-    if (!fs::create_directory(host, ec)) return from_errno(ec.value());
+    if (!fs::create_directory(host, ec)) return from_error(ec);
     return kOk;
 }
 
