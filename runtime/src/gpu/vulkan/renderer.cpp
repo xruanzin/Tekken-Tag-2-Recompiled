@@ -165,18 +165,11 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_ASYNC_PIPELINES")) {
         async_pipelines_ = *value != '\0' && *value != '0';
     }
-    // VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT reduces first-use
-    // compilation latency, but on integrated AMD GPUs it can noticeably hurt
-    // steady-state frame time in effect-heavy scenes. Those GPUs are usually
-    // fill-rate limited here, so prefer fully optimized pipelines even on a
-    // cold cache and pay the one-time compilation cost instead.
-    bool amd_integrated = false;
-#ifdef _WIN32
-    amd_integrated =
-        ctx_.properties.vendorID == 0x1002 &&
-        ctx_.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-#endif
-    fast_pipelines_ = !pipeline_cache_warm_ && !amd_integrated;
+    // Minimize time-to-first-frame on a cold cache. Once the persistent
+    // Vulkan cache is warm, later launches use fully optimized pipelines.
+    // This is especially important for the zero-install dynamic Player,
+    // where CPU translation is already part of cold-start latency.
+    fast_pipelines_ = !pipeline_cache_warm_;
     if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
         fast_pipelines_ = *value != '\0' && *value != '0';
     }
