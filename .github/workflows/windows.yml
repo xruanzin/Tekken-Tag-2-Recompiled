@@ -79,23 +79,47 @@ jobs:
       - name: Run data-independent tests
         run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test|dynamic_semantics_test"
 
-      - name: Validate release/preparation script syntax
+      - name: Validate release/build script syntax
         shell: pwsh
         run: |
           [scriptblock]::Create((Get-Content "release-windows.ps1" -Raw)) | Out-Null
           [scriptblock]::Create((Get-Content "release-player.ps1" -Raw)) | Out-Null
           [scriptblock]::Create((Get-Content "build-windows.ps1" -Raw)) | Out-Null
-          [scriptblock]::Create((Get-Content "tools/prepare-player.ps1" -Raw)) | Out-Null
 
-      - name: Build generic Player ZIP
+      - name: Build zero-install Player ZIP
         shell: pwsh
         run: |
           .\release-player.ps1 -Version v0.0.0-ci -SkipBuild
-          if (-not (Test-Path "dist\TTT2-Windows-v0.0.0-ci.zip")) {
-              throw "Generic Player ZIP was not produced."
+          $Zip = "dist\TTT2-Windows-v0.0.0-ci.zip"
+          if (-not (Test-Path $Zip)) {
+              throw "Zero-install Player ZIP was not produced."
           }
 
-      - name: Upload generic Player ZIP CI artifact
+          $Inspect = "build\player-ci-inspect"
+          if (Test-Path $Inspect) { Remove-Item -Recurse -Force $Inspect }
+          Expand-Archive -LiteralPath $Zip -DestinationPath $Inspect -Force
+
+          foreach ($required in @(
+              "Tekken Tag Tournament 2.exe",
+              "Play Tekken Tag Tournament 2.exe",
+              "bin\ttt2-runtime.exe",
+              "launcher\assets\ttt2_launcher_theme.jpg"
+          )) {
+              if (-not (Test-Path (Join-Path $Inspect $required) -PathType Leaf)) {
+                  throw "Zero-install Player is missing $required"
+              }
+          }
+
+          foreach ($forbidden in @(
+              "tools\prepare-player.ps1",
+              "tools\source"
+          )) {
+              if (Test-Path (Join-Path $Inspect $forbidden)) {
+                  throw "Zero-install Player unexpectedly contains $forbidden"
+              }
+          }
+
+      - name: Upload zero-install Player ZIP CI artifact
         uses: actions/upload-artifact@v4
         with:
           name: TTT2-Windows-Player-CI
