@@ -258,6 +258,7 @@ HBRUSH g_bg_brush = nullptr, g_panel_brush = nullptr, g_edit_brush = nullptr;
 HWND g_game_edit = nullptr, g_preset = nullptr, g_play = nullptr, g_setup_status = nullptr;
 HWND g_prepare_progress = nullptr;
 std::atomic<bool> g_preparing{false};
+std::atomic<int> g_prepare_reported_percent{0};
 constexpr UINT WM_APP_PREP_PROGRESS = WM_APP + 40;
 constexpr UINT WM_APP_PREP_DONE = WM_APP + 41;
 HWND g_display_mode = nullptr, g_output_res = nullptr, g_fps = nullptr, g_fill = nullptr;
@@ -785,9 +786,30 @@ void parse_prepare_output_line(const std::string& raw_line) {
         const size_t split = line.find('|', value_begin);
         if (split != std::string::npos) {
             try {
-                const int percent = std::stoi(line.substr(value_begin, split - value_begin));
+                const int percent = std::clamp(std::stoi(line.substr(value_begin, split - value_begin)), 0, 100);
+                g_prepare_reported_percent.store(percent, std::memory_order_relaxed);
                 post_prepare_progress(percent, utf8_to_wide(line.substr(split + 1)));
                 return;
+            } catch (...) {
+            }
+        }
+    }
+
+    // Ninja reports real compile progress as [current/total]. During the
+    // largest final AOT build, translate that into the 70-95% section of the
+    // launcher's progress bar instead of leaving it visually stuck.
+    const int reported = g_prepare_reported_percent.load(std::memory_order_relaxed);
+    if (reported >= 70 && reported < 96 && !line.empty() && line.front() == '[') {
+        const size_t slash = line.find('/');
+        const size_t close = line.find(']');
+        if (slash != std::string::npos && close != std::string::npos && slash < close) {
+            try {
+                const unsigned long current = std::stoul(line.substr(1, slash - 1));
+                const unsigned long total = std::stoul(line.substr(slash + 1, close - slash - 1));
+                if (total != 0) {
+                    const int percent = 70 + static_cast<int>((25ull * std::min(current, total)) / total);
+                    post_prepare_progress(percent, L"");
+                }
             } catch (...) {
             }
         }
@@ -832,6 +854,7 @@ void begin_first_run_preparation() {
     }
 
     save_config();
+    g_prepare_reported_percent.store(0, std::memory_order_relaxed);
     if (g_setup_status) SetWindowTextW(g_setup_status, preparing_game_text());
     if (g_prepare_progress) {
         SendMessageW(g_prepare_progress, PBM_SETPOS, 0, 0);
