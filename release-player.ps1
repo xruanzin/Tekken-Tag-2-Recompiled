@@ -72,13 +72,6 @@ foreach ($file in @("LICENSE")) {
     }
 }
 
-$Theme = Join-Path $Root "launcher\assets\ttt2_launcher_theme.jpg"
-if (Test-Path -LiteralPath $Theme -PathType Leaf) {
-    $ThemeDest = Join-Path $PackageRoot "launcher\assets"
-    New-Item -ItemType Directory -Force $ThemeDest | Out-Null
-    Copy-Item -LiteralPath $Theme -Destination (Join-Path $ThemeDest "ttt2_launcher_theme.jpg") -Force
-}
-
 $ZArchiveCMake = Join-Path $Root "third_party\ZArchive\CMakeLists.txt"
 if (-not (Test-Path -LiteralPath $ZArchiveCMake -PathType Leaf)) {
     throw "third_party\ZArchive is missing. Clone/update the repository with submodules before building the Player ZIP."
