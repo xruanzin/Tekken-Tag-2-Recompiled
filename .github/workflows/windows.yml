@@ -74,7 +74,7 @@ jobs:
             -DTTT2_WINDOWS_RESOURCE="$env:TTT2_WINDOWS_RESOURCE"
 
       - name: Compile host tools, launchers and game-independent tests
-        run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-shader ttt2_dynamic ttt2_launcher ttt2_player_launcher ttt2_play title_test memory_model_test wua_layers_test dynamic_semantics_test
+        run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-census cafe-semgen cafe-shader ttt2_dynamic ttt2_launcher ttt2_player_launcher ttt2_play title_test memory_model_test wua_layers_test dynamic_semantics_test
 
       - name: Run data-independent tests
         run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test|dynamic_semantics_test"
@@ -84,6 +84,7 @@ jobs:
         run: |
           [scriptblock]::Create((Get-Content "release-windows.ps1" -Raw)) | Out-Null
           [scriptblock]::Create((Get-Content "release-player.ps1" -Raw)) | Out-Null
+          [scriptblock]::Create((Get-Content "release-full-noruntime.ps1" -Raw)) | Out-Null
           [scriptblock]::Create((Get-Content "build-windows.ps1" -Raw)) | Out-Null
 
       - name: Build zero-install Player ZIP
@@ -129,6 +130,53 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Build full compiled ZIP without runtime
+        shell: pwsh
+        run: |
+          .\release-full-noruntime.ps1 -Version v0.0.0-ci -SkipBuild
+          $Zip = "dist\TTT2-Windows-Full-NoRuntime-v0.0.0-ci.zip"
+          if (-not (Test-Path $Zip)) {
+              throw "Full-NoRuntime ZIP was not produced."
+          }
+
+          $Inspect = "build\full-noruntime-ci-inspect"
+          if (Test-Path $Inspect) { Remove-Item -Recurse -Force $Inspect }
+          Expand-Archive -LiteralPath $Zip -DestinationPath $Inspect -Force
+
+          foreach ($required in @(
+              "Tekken Tag Tournament 2.exe",
+              "Play Tekken Tag Tournament 2.exe",
+              "tools\cafe-recomp.exe",
+              "tools\cafe-census.exe",
+              "tools\cafe-semgen.exe",
+              "tools\cafe-shader.exe",
+              "launcher\assets\ttt2_launcher_theme.jpg"
+          )) {
+              if (-not (Test-Path (Join-Path $Inspect $required) -PathType Leaf)) {
+                  throw "Full-NoRuntime package is missing $required"
+              }
+          }
+
+          foreach ($forbidden in @(
+              "bin\ttt2-runtime.exe",
+              "ttt2-runtime.exe",
+              "ttt2.exe"
+          )) {
+              if (Test-Path (Join-Path $Inspect $forbidden)) {
+                  throw "Full-NoRuntime package unexpectedly contains $forbidden"
+              }
+          }
+
+      - name: Upload full compiled ZIP without runtime CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TTT2-Windows-Full-NoRuntime-CI
+          path: |
+            dist/TTT2-Windows-Full-NoRuntime-v0.0.0-ci.zip
+            dist/SHA256SUMS-FULL-NORUNTIME.txt
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Publish zero-install Windows release
         if: github.event_name == 'push' && github.ref == 'refs/heads/windows-host'
         shell: pwsh
@@ -137,6 +185,15 @@ jobs:
         run: |
           $Version = (Get-Content ".github\release-version.txt" -Raw).Trim()
           .\release-player.ps1 -Version $Version -SkipBuild -Publish
+
+      - name: Publish full compiled ZIP without runtime
+        if: github.event_name == 'push' && github.ref == 'refs/heads/windows-host'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $Version = (Get-Content ".github\release-version.txt" -Raw).Trim()
+          .\release-full-noruntime.ps1 -Version $Version -SkipBuild -Publish
 
       - name: Stage launcher-only CI artifact
         shell: pwsh
