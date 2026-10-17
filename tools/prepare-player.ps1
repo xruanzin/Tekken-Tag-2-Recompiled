@@ -7,6 +7,13 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# Windows PowerShell 5.1 otherwise emits redirected text as UTF-16LE on some
+# systems. The native launcher consumes this stream for progress updates, so
+# force UTF-8 and keep the preparation log in one encoding.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
+
 function Write-Stage {
     param([int]$Percent, [string]$Message)
     $line = "TTT2_PROGRESS|$Percent|$Message"
@@ -144,7 +151,11 @@ try {
         "-OutputExe", $Runtime
     )
 
-    & $PowerShell @args 2>&1 | Tee-Object -FilePath $script:LogFile -Append
+    & $PowerShell @args 2>&1 | ForEach-Object {
+        $line = [string]$_
+        Add-Content -LiteralPath $script:LogFile -Encoding UTF8 -Value $line
+        Write-Output $line
+    }
     $code = $LASTEXITCODE
     if ($code -ne 0) {
         throw "A preparacao local falhou com codigo $code."
@@ -159,7 +170,11 @@ if (-not (Test-Path -LiteralPath $Runtime -PathType Leaf)) {
 
 Write-Stage 98 "Verificando o runtime preparado"
 $env:TTT2_USER_DIR = $UserDir
-& $Runtime --verify $Game 2>&1 | Tee-Object -FilePath $script:LogFile -Append
+& $Runtime --verify $Game 2>&1 | ForEach-Object {
+    $line = [string]$_
+    Add-Content -LiteralPath $script:LogFile -Encoding UTF8 -Value $line
+    Write-Output $line
+}
 if ($LASTEXITCODE -ne 0) {
     throw "O runtime local foi gerado, mas a verificacao final falhou."
 }
