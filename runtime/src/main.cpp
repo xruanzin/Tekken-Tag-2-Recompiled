@@ -262,9 +262,7 @@ int main(int argc, char** argv) {
                              cafe_program_info.total_entries);
             } else {
                 std::fprintf(stderr,
-                             "ttt2: experimental generic runtime detected; player releases require "
-                             "the static AOT runtime\n");
-                return 5;
+                             "ttt2: generic zero-install runtime: dynamic PowerPC execution enabled\n");
             }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "ttt2: invalid Tekken.rpx: %s\n", error.what());
