@@ -197,6 +197,7 @@ namespace cafe {
 const Export* find_export(std::string_view, std::string_view) { return nullptr; }
 const DataExport* find_data_export(std::string_view, std::string_view) { return nullptr; }
 PPCFunc* find_registered_host_function(uint32_t) { return nullptr; }
+const char* host_function_name(uint32_t) { return nullptr; }
 std::string sha256_hex(const std::vector<uint8_t>&) { return "dynamic-test"; }
 void diagnostic_trace(const char*) {}
 
