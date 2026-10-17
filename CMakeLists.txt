@@ -94,7 +94,7 @@ option(TTT2_EXPERIMENTAL_DYNAMIC_HOST "Build the generic dynamic PPC player runt
 
 if(WIN32 AND NOT TTT2_GENERATED_DIR AND TTT2_EXPERIMENTAL_DYNAMIC_HOST)
     add_executable(ttt2_dynamic runtime/src/main.cpp runtime/src/dynamic_generated.cpp)
-    set_target_properties(ttt2_dynamic PROPERTIES OUTPUT_NAME "ttt2")
+    set_target_properties(ttt2_dynamic PROPERTIES OUTPUT_NAME "ttt2-runtime")
     target_link_libraries(ttt2_dynamic PRIVATE cafe_runtime)
     target_compile_features(ttt2_dynamic PRIVATE cxx_std_20)
     if(MSVC)
