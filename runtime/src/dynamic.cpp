@@ -127,6 +127,8 @@ bool g_enabled = false;
 std::vector<CodeSection> g_code;
 std::unordered_map<uint32_t, uint32_t> g_rel24_targets;
 std::unordered_map<uint32_t, ImportBinding> g_imports;
+uint32_t g_import_min = UINT32_MAX;
+uint32_t g_import_max = 0;
 
 void flush_block_cache_locked() {
     if (g_block_cache_path.empty() || g_pending_block_starts.empty()) return;
@@ -419,7 +421,7 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t a = ins.address;
     const uint32_t w = ins.word;
     const Op op = ins.op;
-    if (g_full_instruction_trace || ends_block(op)) {
+    if (g_full_instruction_trace) {
         remember_instruction(a, w);
     }
     const uint32_t d = ppc::rd(w);
@@ -1006,6 +1008,10 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
 
 uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
     uint32_t next = block->start;
+    if (!g_full_instruction_trace && !block->instructions.empty()) {
+        const Decoded* tail = block->instructions.back();
+        remember_instruction(tail->address, tail->word);
+    }
     for (const Decoded* ins : block->instructions) {
         next = execute_one(*ctx, base, *ins);
         if (next != ins->address + 4 || ends_block(ins->op)) {
@@ -1105,6 +1111,8 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     g_code.clear();
     g_rel24_targets.clear();
     g_imports.clear();
+    g_import_min = UINT32_MAX;
+    g_import_max = 0;
     {
         std::lock_guard block_lock(g_block_mutex);
         g_blocks.clear();
@@ -1153,6 +1161,8 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
                 binding.function = exported->function;
             }
         }
+        g_import_min = std::min(g_import_min, import.stub_address);
+        g_import_max = std::max(g_import_max, import.stub_address);
         g_imports.emplace(import.stub_address, std::move(binding));
     }
 
@@ -1211,14 +1221,16 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
             continue;
         }
 
-        if (auto it = g_imports.find(pc); it != g_imports.end() && !it->second.is_data) {
-            if (!it->second.function) {
-                fatal("unimplemented dynamic import %s:%s at 0x%08X",
-                      it->second.module.c_str(), it->second.name.c_str(), pc);
+        if (pc >= g_import_min && pc <= g_import_max) {
+            if (auto it = g_imports.find(pc); it != g_imports.end() && !it->second.is_data) {
+                if (!it->second.function) {
+                    fatal("unimplemented dynamic import %s:%s at 0x%08X",
+                          it->second.module.c_str(), it->second.name.c_str(), pc);
+                }
+                it->second.function(ctx, base);
+                pc = ctx.lr;
+                continue;
             }
-            it->second.function(ctx, base);
-            pc = ctx.lr;
-            continue;
         }
 
         if (PPCFunc* host = find_registered_host_function(pc)) {
