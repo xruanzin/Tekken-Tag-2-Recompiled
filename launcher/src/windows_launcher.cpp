@@ -755,6 +755,155 @@ void apply_environment() {
     set_env(L"TTT2_NATIVE_EFFECT_BUFFERS", g_cfg.render_scale >= 2 ? L"1" : L"0");
 }
 
+
+std::wstring utf8_to_wide(const std::string& text) {
+    if (text.empty()) return {};
+    const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (count <= 0) return {};
+    std::wstring result(static_cast<size_t>(count), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), count);
+    return result;
+}
+
+void post_prepare_progress(int percent, const std::wstring& stage) {
+    auto* text = new std::wstring(stage);
+    if (!PostMessageW(g_main, WM_APP_PREP_PROGRESS,
+                      static_cast<WPARAM>(std::clamp(percent, 0, 100)),
+                      reinterpret_cast<LPARAM>(text))) {
+        delete text;
+    }
+}
+
+void parse_prepare_output_line(const std::string& raw_line) {
+    std::string line = raw_line;
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+    if (line.empty()) return;
+
+    constexpr const char* prefix = "TTT2_PROGRESS|";
+    if (line.rfind(prefix, 0) == 0) {
+        const size_t value_begin = std::strlen(prefix);
+        const size_t split = line.find('|', value_begin);
+        if (split != std::string::npos) {
+            try {
+                const int percent = std::stoi(line.substr(value_begin, split - value_begin));
+                post_prepare_progress(percent, utf8_to_wide(line.substr(split + 1)));
+                return;
+            } catch (...) {
+            }
+        }
+    }
+
+    launcher_trace(L"prepare: " + utf8_to_wide(line));
+}
+
+fs::path find_prepare_script() {
+    const std::array<fs::path, 3> candidates = {
+        g_root / L"tools" / L"prepare-player.ps1",
+        g_root / L"prepare-player.ps1",
+        g_root.parent_path() / L"tools" / L"prepare-player.ps1"
+    };
+    std::error_code ec;
+    for (const auto& path : candidates) {
+        if (fs::is_regular_file(path, ec)) return path;
+        ec.clear();
+    }
+    return {};
+}
+
+void begin_first_run_preparation() {
+    if (g_preparing.exchange(true)) return;
+
+    if (!fs::is_directory(g_cfg.game) ||
+        !fs::is_regular_file(g_cfg.game / L"code" / L"Tekken.rpx")) {
+        g_preparing.store(false);
+        MessageBoxW(g_main,
+                    L"First-run preparation currently requires an extracted game folder containing code\\Tekken.rpx.",
+                    L"Tekken Tag Tournament 2", MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    const fs::path script = find_prepare_script();
+    if (script.empty()) {
+        g_preparing.store(false);
+        MessageBoxW(g_main,
+                    L"The local preparation tool is missing from this package. Extract the complete Player ZIP again.",
+                    L"Tekken Tag Tournament 2", MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    save_config();
+    if (g_setup_status) SetWindowTextW(g_setup_status, preparing_game_text());
+    if (g_prepare_progress) {
+        SendMessageW(g_prepare_progress, PBM_SETPOS, 0, 0);
+        ShowWindow(g_prepare_progress, SW_SHOW);
+    }
+    if (g_play) EnableWindow(g_play, FALSE);
+    if (g_game_edit) EnableWindow(g_game_edit, FALSE);
+
+    const fs::path root = g_root;
+    const fs::path game = g_cfg.game;
+    launcher_trace(L"first-run preparation requested for " + game.wstring());
+
+    std::thread([root, game, script] {
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        HANDLE read_pipe = nullptr;
+        HANDLE write_pipe = nullptr;
+        if (!CreatePipe(&read_pipe, &write_pipe, &security, 0)) {
+            PostMessageW(g_main, WM_APP_PREP_DONE, 0, static_cast<LPARAM>(GetLastError()));
+            return;
+        }
+        SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+        std::wstring command =
+            L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + script.wstring() +
+            L"\" -Root \"" + root.wstring() + L"\" -Game \"" + game.wstring() + L"\"";
+        std::vector<wchar_t> mutable_command(command.begin(), command.end());
+        mutable_command.push_back(L'\0');
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = write_pipe;
+        startup.hStdError = write_pipe;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+        PROCESS_INFORMATION process{};
+        const BOOL created = CreateProcessW(
+            nullptr, mutable_command.data(), nullptr, nullptr, TRUE,
+            CREATE_NO_WINDOW, nullptr, root.c_str(), &startup, &process);
+        CloseHandle(write_pipe);
+
+        if (!created) {
+            const DWORD error = GetLastError();
+            CloseHandle(read_pipe);
+            PostMessageW(g_main, WM_APP_PREP_DONE, 0, static_cast<LPARAM>(error));
+            return;
+        }
+
+        CloseHandle(process.hThread);
+        std::string pending;
+        std::array<char, 4096> buffer{};
+        for (;;) {
+            DWORD read = 0;
+            if (!ReadFile(read_pipe, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) || read == 0) break;
+            pending.append(buffer.data(), read);
+            size_t newline = 0;
+            while ((newline = pending.find('\n')) != std::string::npos) {
+                parse_prepare_output_line(pending.substr(0, newline + 1));
+                pending.erase(0, newline + 1);
+            }
+        }
+        if (!pending.empty()) parse_prepare_output_line(pending);
+        CloseHandle(read_pipe);
+
+        WaitForSingleObject(process.hProcess, INFINITE);
+        DWORD exit_code = 1;
+        GetExitCodeProcess(process.hProcess, &exit_code);
+        CloseHandle(process.hProcess);
+        PostMessageW(g_main, WM_APP_PREP_DONE, exit_code == 0 ? 1 : 0, static_cast<LPARAM>(exit_code));
+    }).detach();
+}
+
 bool verify_game_source(const fs::path& game, bool show_error) {
     launcher_trace(L"verify requested: " + game.wstring());
     if (!valid_game(game) || g_exe.empty()) {
@@ -1166,10 +1315,21 @@ void create_home() {
     make_static(page, L"VULKAN 1.3", 24, 304, 180, 26, g_nav_font);
     make_static(page, L"NATIVE WINDOWS RUNTIME", 24, 333, 260, 24, g_small);
 
-    g_setup_status = make_static(page,
-        valid_game(g_cfg.game) ? ready_game_text() : select_game_play_text(),
-        24, 352, 319, 38, g_small);
-    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 394, 319, 54, true);
+    const wchar_t* home_status = select_game_play_text();
+    if (valid_game(g_cfg.game)) home_status = g_exe.empty() ? preparation_required_text() : ready_game_text();
+    g_setup_status = make_static(page, home_status, 24, 344, 319, 32, g_small);
+
+    g_prepare_progress = CreateWindowExW(
+        0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_SMOOTH,
+        24, 378, 319, 14, page, nullptr, g_instance, nullptr);
+    if (g_prepare_progress) {
+        SendMessageW(g_prepare_progress, PBM_SETRANGE32, 0, 100);
+        SendMessageW(g_prepare_progress, PBM_SETBARCOLOR, 0, kBlue);
+        SendMessageW(g_prepare_progress, PBM_SETBKCOLOR, 0, kPanel2);
+        if (g_preparing.load()) ShowWindow(g_prepare_progress, SW_SHOW);
+    }
+
+    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 402, 319, 48, true);
     make_button(page, ID_SAVE, tr(T_SAVE), 24, 460, 150, 40, true);
     make_button(page, ID_RESET, tr(T_RESET), 185, 460, 158, 40, true);
 
@@ -1273,6 +1433,7 @@ void destroy_pages() {
     }
     g_home_art = nullptr;
     g_game_edit = g_preset = g_play = g_setup_status = nullptr;
+    g_prepare_progress = g_prepare_stage = nullptr;
     g_display_mode = g_output_res = g_fps = g_fill = nullptr;
     g_render_scale = g_aa = g_upscaler = g_aniso = g_sharpen = g_sharpen_value = g_async_shaders = nullptr;
     g_game_language = g_controller = g_audio = g_volume = g_volume_value = nullptr;
@@ -1425,10 +1586,13 @@ void handle_browse() {
     g_cfg.game = *chosen;
     SetWindowTextW(g_game_edit, g_cfg.game.c_str());
     save_config();
-    const bool recognized = verify_game_source(g_cfg.game, true);
+    g_exe = find_game_executable();
+    bool recognized = valid_game(g_cfg.game);
+    if (!g_exe.empty() && recognized) recognized = verify_game_source(g_cfg.game, true);
     if (g_setup_status) {
         SetWindowTextW(g_setup_status,
-                       recognized ? ready_game_text() : select_game_play_text());
+                       recognized ? (g_exe.empty() ? preparation_required_text() : ready_game_text())
+                                  : select_game_play_text());
     }
 }
 
@@ -1457,7 +1621,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         if (id == ID_PLAY && code == BN_CLICKED) {
             sync_from_controls();
-            if (launch_game()) DestroyWindow(hwnd);
+            g_exe = find_game_executable();
+            if (g_exe.empty()) {
+                begin_first_run_preparation();
+            } else if (launch_game()) {
+                DestroyWindow(hwnd);
+            }
             return 0;
         }
         if (id == ID_SAVE && code == BN_CLICKED) {
@@ -1488,6 +1657,54 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         if ((id == ID_RENDER_SCALE || id == ID_AA || id == ID_ANISO) && code == CBN_SELCHANGE) mark_custom();
         return 0;
     }
+    case WM_APP_PREP_PROGRESS: {
+        std::unique_ptr<std::wstring> stage(reinterpret_cast<std::wstring*>(lparam));
+        if (g_prepare_progress) {
+            ShowWindow(g_prepare_progress, SW_SHOW);
+            SendMessageW(g_prepare_progress, PBM_SETPOS, static_cast<int>(wparam), 0);
+        }
+        if (g_setup_status && stage && !stage->empty()) SetWindowTextW(g_setup_status, stage->c_str());
+        return 0;
+    }
+
+    case WM_APP_PREP_DONE: {
+        const bool success = wparam != 0;
+        const DWORD exit_code = static_cast<DWORD>(lparam);
+        g_preparing.store(false);
+        if (g_play) EnableWindow(g_play, TRUE);
+        if (g_game_edit) EnableWindow(g_game_edit, TRUE);
+        g_exe = find_game_executable();
+
+        if (success && !g_exe.empty()) {
+            if (g_prepare_progress) {
+                SendMessageW(g_prepare_progress, PBM_SETPOS, 100, 0);
+                ShowWindow(g_prepare_progress, SW_SHOW);
+            }
+            if (g_setup_status) SetWindowTextW(g_setup_status, ready_game_text());
+            g_verified_game.clear();
+            launcher_trace(L"first-run preparation completed successfully");
+            if (launch_game()) DestroyWindow(hwnd);
+        } else {
+            if (g_setup_status) SetWindowTextW(g_setup_status, L"Preparation failed. See user\\prepare.log.");
+            wchar_t message[320]{};
+            std::swprintf(message, std::size(message),
+                          L"The first-run preparation failed (exit code 0x%08lX).\n\nSee user\\prepare.log for details.",
+                          static_cast<unsigned long>(exit_code));
+            MessageBoxW(hwnd, message, L"Tekken Tag Tournament 2", MB_ICONERROR | MB_OK);
+        }
+        return 0;
+    }
+
+    case WM_CLOSE:
+        if (g_preparing.load()) {
+            MessageBoxW(hwnd,
+                        L"The game is still being prepared. Wait for this step to finish before closing the launcher.",
+                        L"Tekken Tag Tournament 2", MB_ICONINFORMATION | MB_OK);
+            return 0;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+
     case WM_HSCROLL: {
         HWND slider = reinterpret_cast<HWND>(lparam);
         if (slider == g_sharpen) mark_custom();
@@ -1682,7 +1899,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const bool quick_play = command_argv && command_argc >= 2 &&
                             _wcsicmp(command_argv[1], L"--play") == 0;
     if (command_argv) LocalFree(command_argv);
-    if (quick_play) {
+    if (quick_play && !g_exe.empty()) {
         const bool ok = launch_game(true);
         if (g_gdiplus_token) Gdiplus::GdiplusShutdown(g_gdiplus_token);
         CoUninitialize();
