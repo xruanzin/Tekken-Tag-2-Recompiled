@@ -51,6 +51,10 @@ constexpr size_t kTraceEntries = 64;
 thread_local std::array<TraceEntry, kTraceEntries> t_trace{};
 thread_local size_t t_trace_cursor = 0;
 thread_local size_t t_trace_count = 0;
+thread_local uint64_t t_blocks_executed = 0;
+thread_local uint64_t t_instructions_executed = 0;
+thread_local auto t_last_progress = std::chrono::steady_clock::now();
+bool g_full_instruction_trace = false;
 
 void remember_instruction(uint32_t address, uint32_t word) {
     t_trace[t_trace_cursor] = {address, word};
@@ -77,6 +81,19 @@ constexpr size_t kMaxBlockInstructions = 64;
 
 std::unordered_map<uint32_t, std::unique_ptr<Block>> g_blocks;
 std::mutex g_block_mutex;
+
+// Hot guest loops revisit the same basic blocks constantly. Avoid taking the
+// global block mutex and hashing into g_blocks on every iteration by keeping a
+// small direct-mapped cache per host thread. The epoch invalidates pointers
+// whenever a new program is initialized.
+struct HotBlockEntry {
+    uint32_t address{};
+    Block* block{};
+};
+constexpr size_t kHotBlockCacheSize = 4096;
+thread_local std::array<HotBlockEntry, kHotBlockCacheSize> t_hot_blocks{};
+thread_local uint64_t t_hot_block_epoch = 0;
+std::atomic<uint64_t> g_hot_block_epoch{1};
 
 std::filesystem::path g_block_cache_path;
 std::unordered_set<uint32_t> g_known_block_starts;
@@ -199,13 +216,13 @@ void reset_jit_arena() {
         g_jit_arena = nullptr;
     }
     g_jit_offset = 0;
-    const char* option = std::getenv("TTT2_DYNAMIC_JIT");
-    g_jit_enabled = !(option && *option == '0');
+    const char* option = std::getenv("TTT2_DYNAMIC_TRAMPOLINES");
+    g_jit_enabled = option && *option == '1';
     if (!g_jit_enabled) return;
 
-    // Small baseline thunks are emitted on demand. The arena is process-local
-    // and contains no guest code bytes; each thunk binds one decoded block to
-    // the native C++ block executor.
+    // These are dispatch trampolines, not translated PPC code. They are kept
+    // only as an opt-in comparison path; direct calls to execute_block_cpp are
+    // faster on the Windows Player because they avoid an extra indirect jump.
     g_jit_arena = static_cast<uint8_t*>(
         VirtualAlloc(nullptr, kJitArenaSize, MEM_RESERVE | MEM_COMMIT,
                      PAGE_EXECUTE_READWRITE));
@@ -401,8 +418,10 @@ void fill_write(PPCContext& ctx, uint32_t d, double value) {
 uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t a = ins.address;
     const uint32_t w = ins.word;
-    remember_instruction(a, w);
     const Op op = ins.op;
+    if (g_full_instruction_trace || ends_block(op)) {
+        remember_instruction(a, w);
+    }
     const uint32_t d = ppc::rd(w);
     const uint32_t ra = ppc::ra(w);
     const uint32_t rb = ppc::rb(w);
@@ -1027,10 +1046,23 @@ BlockFn emit_block_thunk(Block* block) {
 #endif
 
 Block* get_or_build_block(uint32_t start) {
+    const uint64_t epoch = g_hot_block_epoch.load(std::memory_order_relaxed);
+    if (t_hot_block_epoch != epoch) {
+        t_hot_blocks.fill({});
+        t_hot_block_epoch = epoch;
+    }
+    HotBlockEntry& hot = t_hot_blocks[(start >> 2) & (kHotBlockCacheSize - 1)];
+    if (hot.block != nullptr && hot.address == start) {
+        return hot.block;
+    }
+
     {
         std::lock_guard lock(g_block_mutex);
         const auto found = g_blocks.find(start);
-        if (found != g_blocks.end()) return found->second.get();
+        if (found != g_blocks.end()) {
+            hot = {start, found->second.get()};
+            return found->second.get();
+        }
     }
 
     auto block = std::make_unique<Block>();
@@ -1050,10 +1082,12 @@ Block* get_or_build_block(uint32_t start) {
 
     std::lock_guard lock(g_block_mutex);
     if (const auto found = g_blocks.find(start); found != g_blocks.end()) {
+        hot = {start, found->second.get()};
         return found->second.get();
     }
     Block* raw = block.get();
     g_blocks.emplace(start, std::move(block));
+    hot = {start, raw};
     remember_block_locked(start);
 #ifdef _WIN32
     raw->native = emit_block_thunk(raw);
@@ -1081,6 +1115,10 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
         reset_jit_arena();
 #endif
     }
+
+    g_hot_block_epoch.fetch_add(1, std::memory_order_relaxed);
+    const char* trace_option = std::getenv("TTT2_TRACE_GUEST");
+    g_full_instruction_trace = trace_option && *trace_option == '1';
 
     g_rel24_targets.insert(image.rel24_targets.begin(), image.rel24_targets.end());
 
@@ -1132,8 +1170,8 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
                  "ttt2: dynamic host: decoded %zu PPC instructions across %zu code sections in %.2f ms\n",
                  instruction_count, g_code.size(), ms);
 #ifdef _WIN32
-    std::fprintf(stderr, "ttt2: dynamic host: baseline x64 block JIT %s\n",
-                 g_jit_enabled && g_jit_arena ? "enabled" : "disabled");
+    std::fprintf(stderr, "ttt2: dynamic host: x64 dispatch trampolines %s\n",
+                 g_jit_enabled && g_jit_arena ? "enabled" : "disabled (direct C++ blocks)");
 #endif
     std::fprintf(stderr, "ttt2: dynamic host: warmed %zu cached code blocks\n", warmed);
 }
@@ -1193,6 +1231,23 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
         if (!block) {
             fatal("dynamic guest execution reached non-code address 0x%08X", pc);
         }
+
+        ++t_blocks_executed;
+        t_instructions_executed += block->instructions.size();
+        if ((t_blocks_executed & 0x3FFFFu) == 0) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - t_last_progress >= std::chrono::seconds(2)) {
+                char progress[192]{};
+                std::snprintf(progress, sizeof(progress),
+                              "dynamic progress pc=0x%08X blocks=%llu instructions=%llu",
+                              pc,
+                              static_cast<unsigned long long>(t_blocks_executed),
+                              static_cast<unsigned long long>(t_instructions_executed));
+                diagnostic_trace(progress);
+                t_last_progress = now;
+            }
+        }
+
 #ifdef _WIN32
         if (block->native) {
             pc = block->native(&ctx, base);
@@ -1241,6 +1296,7 @@ void initialize_test_program(uint32_t base_address,
         section.code.push_back({address, words[i], ppc::decode(words[i])});
     }
     g_code.push_back(std::move(section));
+    g_hot_block_epoch.fetch_add(1, std::memory_order_relaxed);
     g_enabled = true;
 }
 
