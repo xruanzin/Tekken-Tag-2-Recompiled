@@ -173,8 +173,20 @@ if ($Publish) {
     if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated." }
 
     $Repo = "xruanzin/Tekken-Tag-2-Recompiled"
-    & $Gh release view $Version --repo $Repo --json tagName 2>$null | Out-Null
-    $Exists = ($LASTEXITCODE -eq 0)
+
+    # A missing release is the expected first-publish case. Windows PowerShell
+    # 5.1 can turn native stderr into a terminating RemoteException when
+    # ErrorActionPreference is Stop, so probe with Continue and inspect the
+    # native exit code explicitly.
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Gh release view $Version --repo $Repo --json tagName 2>$null | Out-Null
+        $ReleaseViewExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    $Exists = ($ReleaseViewExitCode -eq 0)
 
     if ($Exists) {
         & $Gh release upload $Version $Zip $Checksums --repo $Repo --clobber
