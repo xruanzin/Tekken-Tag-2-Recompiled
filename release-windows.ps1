@@ -10,6 +10,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($Publish) {
+    throw "release-windows.ps1 creates a local game-derived static AOT package and cannot publish it. Use release-player.ps1 -Publish for the generic Player ZIP."
+}
+
 if ($env:OS -ne "Windows_NT") { throw "This release builder must be run on Windows." }
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
