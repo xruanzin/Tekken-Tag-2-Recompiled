@@ -1604,6 +1604,7 @@ LRESULT draw_slider(const NMCUSTOMDRAW* custom) {
 }
 
 void handle_browse() {
+    if (g_preparing.load()) return;
     const auto chosen = choose_game();
     if (!chosen) return;
     g_cfg.game = *chosen;
