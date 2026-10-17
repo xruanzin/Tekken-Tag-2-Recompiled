@@ -256,7 +256,7 @@ HFONT g_font = nullptr, g_small = nullptr, g_title = nullptr, g_nav_font = nullp
 HBRUSH g_bg_brush = nullptr, g_panel_brush = nullptr, g_edit_brush = nullptr;
 
 HWND g_game_edit = nullptr, g_preset = nullptr, g_play = nullptr, g_setup_status = nullptr;
-HWND g_prepare_progress = nullptr, g_prepare_stage = nullptr;
+HWND g_prepare_progress = nullptr;
 std::atomic<bool> g_preparing{false};
 constexpr UINT WM_APP_PREP_PROGRESS = WM_APP + 40;
 constexpr UINT WM_APP_PREP_DONE = WM_APP + 41;
@@ -1433,7 +1433,7 @@ void destroy_pages() {
     }
     g_home_art = nullptr;
     g_game_edit = g_preset = g_play = g_setup_status = nullptr;
-    g_prepare_progress = g_prepare_stage = nullptr;
+    g_prepare_progress = nullptr;
     g_display_mode = g_output_res = g_fps = g_fill = nullptr;
     g_render_scale = g_aa = g_upscaler = g_aniso = g_sharpen = g_sharpen_value = g_async_shaders = nullptr;
     g_game_language = g_controller = g_audio = g_volume = g_volume_value = nullptr;
@@ -1819,7 +1819,7 @@ void create_nav() {
 }
 
 bool init_window() {
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&icc);
 
     WNDCLASSEXW art_class{sizeof(art_class)};
