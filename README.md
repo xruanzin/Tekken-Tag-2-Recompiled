@@ -9,8 +9,9 @@ Unofficial **Windows 11 port** of the original Linux static-recompilation projec
 **Windows port, launcher, host integration and Windows-focused performance work:** xruanzin.
 
 This fork keeps the original project's static-recompilation architecture and native Windows/Vulkan
-runtime. Public player releases use the ahead-of-time PowerPC-to-x86-64 port built once by the
-maintainer from the supported EU v16 RPX. The player never runs cafe-recomp, CMake or Clang.
+runtime. Public Player releases do not contain game-derived AOT code. On first launch the Player
+prepares a local PowerPC-to-x86-64 runtime from the user's own supported EU v16 RPX, shows the
+current preparation stage in the launcher, and reuses that local runtime on later launches.
 
 > [!IMPORTANT]
 > **No game files are included.** You must provide your own legally obtained copy of
@@ -64,53 +65,58 @@ runtime verifies the player's selected game source before launch.
 
 ## Releases
 
-The player-facing package follows the same workflow as the GOW3 Windows port: download one ZIP,
-open the launcher, choose the original game and press **PLAY**. The release already contains the
-prebuilt static port runtime.
+The player-facing package follows the same workflow goal as the GOW3 Windows port: download one ZIP,
+open the launcher, choose your own game folder and press **PLAY**. Because the Wii U title uses
+PowerPC code, the first launch performs a one-time local AOT preparation from the player's own
+`code/Tekken.rpx`. The launcher shows the current stage and a progress bar during this process.
 
-A packaged installation is laid out as:
+A generic Player installation is laid out as:
 
 ```text
 ttt2-windows/
 ├─ Tekken Tag Tournament 2.exe
 ├─ Play Tekken Tag Tournament 2.exe
 ├─ bin/
-│  └─ ttt2-runtime.exe
+│  └─ ttt2-runtime.exe        # created locally after first-run preparation
+├─ tools/
+│  ├─ prepare-player.ps1
+│  └─ source/
 ├─ user/
 ├─ out/
-├─ README-Windows.txt
+├─ README-PLAYER.txt
 └─ BUILD-INFO.txt
 ```
 
-`bin/ttt2-runtime.exe` is produced from the ahead-of-time recompiler by the maintainer before
-the release is published. End users do not need the compiler toolchain.
-
-GitHub CI deliberately does **not** publish the experimental generic/JIT runtime as a player
-release. Production player packages are created with `release-windows.ps1`, which refuses to
-package a runtime unless it identifies itself as a static AOT build.
+The downloadable ZIP does **not** contain `ttt2-runtime.exe` or generated game code. If required
+compiler components are missing, the first-run preparer attempts to install them automatically
+through Windows Package Manager. This one-time setup can be large and can take several minutes.
 
 ## First run
 
-1. Extract the complete Windows ZIP.
+1. Extract the complete Windows Player ZIP.
 2. Open `Tekken Tag Tournament 2.exe`.
-3. Select the supported EU v16 game folder or `.wua`.
+3. Select the supported extracted EU v16 game folder containing `code/Tekken.rpx`.
 4. Click **PLAY / JOGAR**.
+5. Wait for the preparation progress bar to reach 100%; the game then starts automatically.
 
-On later starts, `Play Tekken Tag Tournament 2.exe` skips the launcher window and uses the
-saved settings. Player-created data stays under `user/`, including `user/last_run.log`.
+On later starts, `Play Tekken Tag Tournament 2.exe` skips the launcher window and uses the saved
+settings and locally prepared runtime. Player-created data stays under `user/`, including
+preparation/runtime logs and persistent caches.
 
 ## Quick start on Windows
 
 ### Requirements
 
-For the release package:
+For the Player package:
 
 - Windows 11 x64
 - CPU with AVX2
 - Vulkan 1.3-capable GPU and current driver
-- a legally obtained supported EU v16 game folder or supported `.wua`
+- a legally obtained extracted EU v16 game folder containing `code/Tekken.rpx`
+- Windows Package Manager (`winget`) if the required first-run compiler components are not already installed
 
-The development toolchain below is needed only when building the project from source.
+The launcher handles the one-time local preparation. The manual developer toolchain below is only
+needed when working on the project itself.
 
 ### Manual developer build
 
@@ -137,16 +143,17 @@ More Windows-specific details are in [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ## Maintainer release build
 
-The release owner can build and publish the complete player package with one command after
-checking out `windows-host`:
+The public Player ZIP is built and published with:
 
 ```powershell
-.\release-windows.ps1 -Game "D:\Path\To\TTT2-EU-v16" -Version v1.0.0 -Publish
+.\release-player.ps1 -Version v1.0.0 -Publish
 ```
 
-The script verifies the EU v16 `Tekken.rpx`, builds the static AOT runtime, rejects the
-experimental dynamic host, assembles the GOW3-style folder layout, creates SHA-256 checksums and
-can upload the ZIP plus executables to GitHub Releases.
+This package contains only the generic launcher, quick-play helper and local preparation sources.
+It deliberately excludes generated game code and any locally built `ttt2-runtime.exe`.
+
+`release-windows.ps1` remains available for local developer/testing packages built from the
+maintainer's own RPX, but its `-Publish` path is disabled.
 
 ## Launcher
 
@@ -169,10 +176,10 @@ Launcher artwork and launcher-specific code live together under
 
 ## Performance and caches
 
-The Windows fork keeps reusable shader, Vulkan pipeline and detiled-texture caches. The static
-player runtime starts without any local game recompilation. The first run through a stage or
-character combination can still be less smooth while new graphics work is compiled; repeated
-content should reuse more cached data.
+The Windows fork keeps reusable shader, Vulkan pipeline and detiled-texture caches. After the
+one-time first-run AOT preparation, normal launches reuse the locally prepared runtime and do not
+recompile the game. The first run through a stage or character combination can still be less
+smooth while new graphics work is compiled; repeated content should reuse more cached data.
 
 For performance reports, include the runtime log and describe the exact match, stage and action
 that caused the hitch. Do **not** attach game data.
