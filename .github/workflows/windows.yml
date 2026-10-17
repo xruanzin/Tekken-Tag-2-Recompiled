@@ -84,7 +84,7 @@ jobs:
         run: |
           [scriptblock]::Create((Get-Content "release-windows.ps1" -Raw)) | Out-Null
           [scriptblock]::Create((Get-Content "release-player.ps1" -Raw)) | Out-Null
-          [scriptblock]::Create((Get-Content "release-full-noruntime.ps1" -Raw)) | Out-Null
+          [scriptblock]::Create((Get-Content "release-full.ps1" -Raw)) | Out-Null
           [scriptblock]::Create((Get-Content "build-windows.ps1" -Raw)) | Out-Null
 
       - name: Build zero-install Player ZIP
@@ -130,22 +130,23 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Build full compiled ZIP without runtime
+      - name: Build complete full compiled ZIP
         shell: pwsh
         run: |
-          .\release-full-noruntime.ps1 -Version v0.0.0-ci -SkipBuild
-          $Zip = "dist\TTT2-Windows-Full-NoRuntime-v0.0.0-ci.zip"
+          .\release-full.ps1 -Version v0.0.0-ci -SkipBuild
+          $Zip = "dist\TTT2-Windows-Full-v0.0.0-ci.zip"
           if (-not (Test-Path $Zip)) {
-              throw "Full-NoRuntime ZIP was not produced."
+              throw "Complete Full ZIP was not produced."
           }
 
-          $Inspect = "build\full-noruntime-ci-inspect"
+          $Inspect = "build\full-ci-inspect"
           if (Test-Path $Inspect) { Remove-Item -Recurse -Force $Inspect }
           Expand-Archive -LiteralPath $Zip -DestinationPath $Inspect -Force
 
           foreach ($required in @(
               "Tekken Tag Tournament 2.exe",
               "Play Tekken Tag Tournament 2.exe",
+              "bin\ttt2-runtime.exe",
               "tools\cafe-recomp.exe",
               "tools\cafe-census.exe",
               "tools\cafe-semgen.exe",
@@ -153,27 +154,28 @@ jobs:
               "launcher\assets\ttt2_launcher_theme.jpg"
           )) {
               if (-not (Test-Path (Join-Path $Inspect $required) -PathType Leaf)) {
-                  throw "Full-NoRuntime package is missing $required"
+                  throw "Complete Full package is missing $required"
               }
           }
 
           foreach ($forbidden in @(
-              "bin\ttt2-runtime.exe",
-              "ttt2-runtime.exe",
-              "ttt2.exe"
+              "code\Tekken.rpx",
+              "generated",
+              "tools\source",
+              "tools\prepare-player.ps1"
           )) {
               if (Test-Path (Join-Path $Inspect $forbidden)) {
-                  throw "Full-NoRuntime package unexpectedly contains $forbidden"
+                  throw "Complete Full package unexpectedly contains $forbidden"
               }
           }
 
-      - name: Upload full compiled ZIP without runtime CI artifact
+      - name: Upload complete full compiled ZIP CI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TTT2-Windows-Full-NoRuntime-CI
+          name: TTT2-Windows-Full-CI
           path: |
-            dist/TTT2-Windows-Full-NoRuntime-v0.0.0-ci.zip
-            dist/SHA256SUMS-FULL-NORUNTIME.txt
+            dist/TTT2-Windows-Full-v0.0.0-ci.zip
+            dist/SHA256SUMS-FULL.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -186,14 +188,14 @@ jobs:
           $Version = (Get-Content ".github\release-version.txt" -Raw).Trim()
           .\release-player.ps1 -Version $Version -SkipBuild -Publish
 
-      - name: Publish full compiled ZIP without runtime
+      - name: Publish complete full Windows release package
         if: github.event_name == 'push' && github.ref == 'refs/heads/windows-host'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $Version = (Get-Content ".github\release-version.txt" -Raw).Trim()
-          .\release-full-noruntime.ps1 -Version $Version -SkipBuild -Publish
+          .\release-full.ps1 -Version $Version -SkipBuild -Publish
 
       - name: Stage launcher-only CI artifact
         shell: pwsh
