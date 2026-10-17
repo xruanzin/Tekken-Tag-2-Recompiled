@@ -170,7 +170,7 @@ This is a zero-install Player build. The generic Windows runtime is already incl
 player does not install compilers and does not perform a Full-AOT compilation on first launch.
 
 The runtime validates the selected Tekken.rpx and uses the built-in dynamic PowerPC host with
-native x64 block JIT and persistent caches while the game runs.
+optimized dynamic block execution and persistent caches while the game runs.
 
 No game files are included in the download.
 "@ | Set-Content -LiteralPath $Notes -Encoding UTF8
