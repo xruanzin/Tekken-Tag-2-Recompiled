@@ -14,6 +14,7 @@
 #include "cafe/runtime.h"
 #include "cafe/sysmem.h"
 
+#include <atomic>
 #include <cstring>
 
 namespace cafe::gx2 {
@@ -33,6 +34,8 @@ struct ScanOut {
     bool enabled = false;
 };
 ScanOut g_tv, g_drc;
+std::atomic<bool> g_first_scan_copy_logged{false};
+std::atomic<bool> g_first_swap_logged{false};
 
 struct Size {
     uint32_t width, height;
@@ -108,11 +111,17 @@ uint32_t GX2GetSystemDRCMode() { return 1; }        // single GamePad
 bool GX2IsVideoOutReady() { return true; }
 
 void GX2CopyColorBufferToScanBuffer(ColorBuffer* buffer, uint32_t target) {
+    if (!g_first_scan_copy_logged.exchange(true, std::memory_order_relaxed)) {
+        diagnostic_trace("GX2CopyColorBufferToScanBuffer: first scan-out copy");
+    }
     ApiLock lock;
     HlePacket(pm4::kHleCopyColorToScan).u32(target).guest_struct(*buffer).write();
 }
 
 void GX2SwapScanBuffers() {
+    if (!g_first_swap_logged.exchange(true, std::memory_order_relaxed)) {
+        diagnostic_trace("GX2SwapScanBuffers: first swap requested");
+    }
     {
         ApiLock lock;
         gpu::note_swap_requested();
@@ -174,6 +183,8 @@ void GX2SubmitUserTimeStamp(be<uint64_t>* out, uint64_t value, uint32_t event, b
 void init_display() {
     g_tv = {};
     g_drc = {};
+    g_first_scan_copy_logged.store(false, std::memory_order_relaxed);
+    g_first_swap_logged.store(false, std::memory_order_relaxed);
 }
 
 CAFE_EXPORT(gx2, GX2CalcTVSize, GX2CalcTVSize);
