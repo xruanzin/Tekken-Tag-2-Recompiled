@@ -75,6 +75,16 @@ foreach ($file in @("LICENSE")) {
     }
 }
 
+# Ship the project-owned launcher artwork as a normal asset. The generic
+# launcher deliberately does not embed any resource generated from the user's
+# game dump, but it can still load this non-game artwork at runtime.
+$ThemeSource = Join-Path $Root "launcher\assets\ttt2_launcher_theme.jpg"
+if (Test-Path -LiteralPath $ThemeSource -PathType Leaf) {
+    $ThemeDest = Join-Path $PackageRoot "launcher\assets"
+    New-Item -ItemType Directory -Force $ThemeDest | Out-Null
+    Copy-Item -LiteralPath $ThemeSource -Destination (Join-Path $ThemeDest "ttt2_launcher_theme.jpg") -Force
+}
+
 $ZArchiveCMake = Join-Path $Root "third_party\ZArchive\CMakeLists.txt"
 if (-not (Test-Path -LiteralPath $ZArchiveCMake -PathType Leaf)) {
     throw "third_party\ZArchive is missing. Clone/update the repository with submodules before building the Player ZIP."
