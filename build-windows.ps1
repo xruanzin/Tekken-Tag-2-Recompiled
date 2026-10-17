@@ -12,6 +12,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($env:TTT2_PLAYER_PROGRESS -eq "1") {
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [Console]::OutputEncoding = $Utf8NoBom
+    $OutputEncoding = $Utf8NoBom
+}
+
 if ($env:OS -ne "Windows_NT") {
     throw "This script must be run on Windows."
 }
