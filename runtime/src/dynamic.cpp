@@ -53,8 +53,25 @@ thread_local size_t t_trace_cursor = 0;
 thread_local size_t t_trace_count = 0;
 thread_local uint64_t t_blocks_executed = 0;
 thread_local uint64_t t_instructions_executed = 0;
+thread_local uint64_t t_import_calls = 0;
+thread_local uint64_t t_host_calls = 0;
+thread_local uint64_t t_run_calls = 0;
 thread_local auto t_last_progress = std::chrono::steady_clock::now();
 bool g_full_instruction_trace = false;
+
+void trace_dynamic_state(const char* kind, uint32_t pc, uint32_t stop,
+                         const PPCContext& ctx) {
+    char line[224]{};
+    std::snprintf(line, sizeof(line),
+                  "dynamic %s pc=0x%08X stop=0x%08X lr=0x%08X sp=0x%08X ctr=0x%08X "
+                  "blocks=%llu instructions=%llu imports=%llu hosts=%llu",
+                  kind, pc, stop, ctx.lr, ctx.r[1], ctx.ctr,
+                  static_cast<unsigned long long>(t_blocks_executed),
+                  static_cast<unsigned long long>(t_instructions_executed),
+                  static_cast<unsigned long long>(t_import_calls),
+                  static_cast<unsigned long long>(t_host_calls));
+    diagnostic_trace(line);
+}
 
 void remember_instruction(uint32_t address, uint32_t word) {
     t_trace[t_trace_cursor] = {address, word};
@@ -1208,6 +1225,10 @@ void initialize_data_imports() {
 void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
          bool suppress_presentation_hook) {
     uint32_t pc = entry;
+    ++t_run_calls;
+    if (t_run_calls <= 32) {
+        trace_dynamic_state("run-enter", pc, stop, ctx);
+    }
     while (pc != stop) {
         // The static port replaces this function to observe the system-info
         // object after the original guest body returns. Reproduce the same
@@ -1223,6 +1244,15 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 
         if (pc >= g_import_min && pc <= g_import_max) {
             if (auto it = g_imports.find(pc); it != g_imports.end() && !it->second.is_data) {
+                ++t_import_calls;
+                if (t_import_calls <= 64) {
+                    char marker[256]{};
+                    std::snprintf(marker, sizeof(marker),
+                                  "dynamic import #%llu pc=0x%08X %s:%s lr=0x%08X",
+                                  static_cast<unsigned long long>(t_import_calls), pc,
+                                  it->second.module.c_str(), it->second.name.c_str(), ctx.lr);
+                    diagnostic_trace(marker);
+                }
                 if (!it->second.function) {
                     fatal("unimplemented dynamic import %s:%s at 0x%08X",
                           it->second.module.c_str(), it->second.name.c_str(), pc);
@@ -1234,6 +1264,16 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
         }
 
         if (PPCFunc* host = find_registered_host_function(pc)) {
+            ++t_host_calls;
+            if (t_host_calls <= 32) {
+                char marker[224]{};
+                const char* name = host_function_name(pc);
+                std::snprintf(marker, sizeof(marker),
+                              "dynamic host #%llu pc=0x%08X name=%s lr=0x%08X",
+                              static_cast<unsigned long long>(t_host_calls), pc,
+                              name ? name : "(unknown)", ctx.lr);
+                diagnostic_trace(marker);
+            }
             host(ctx, base);
             pc = ctx.lr;
             continue;
@@ -1246,16 +1286,23 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 
         ++t_blocks_executed;
         t_instructions_executed += block->instructions.size();
-        if ((t_blocks_executed & 0x3FFFFu) == 0) {
+
+        // Boot diagnostics must be useful even when the title stalls almost
+        // immediately. Record the first blocks verbosely, then sample often
+        // enough to capture a stuck/slow PC without paying a clock-query cost
+        // on every basic block.
+        if (t_blocks_executed <= 96) {
+            char marker[224]{};
+            std::snprintf(marker, sizeof(marker),
+                          "dynamic block #%llu pc=0x%08X size=%zu lr=0x%08X sp=0x%08X",
+                          static_cast<unsigned long long>(t_blocks_executed), pc,
+                          block->instructions.size(), ctx.lr, ctx.r[1]);
+            diagnostic_trace(marker);
+        }
+        if (t_blocks_executed == 1 || (t_blocks_executed & 0xFFFu) == 0) {
             const auto now = std::chrono::steady_clock::now();
-            if (now - t_last_progress >= std::chrono::seconds(2)) {
-                char progress[192]{};
-                std::snprintf(progress, sizeof(progress),
-                              "dynamic progress pc=0x%08X blocks=%llu instructions=%llu",
-                              pc,
-                              static_cast<unsigned long long>(t_blocks_executed),
-                              static_cast<unsigned long long>(t_instructions_executed));
-                diagnostic_trace(progress);
+            if (t_blocks_executed == 1 || now - t_last_progress >= std::chrono::seconds(1)) {
+                trace_dynamic_state("progress", pc, stop, ctx);
                 t_last_progress = now;
             }
         }
@@ -1268,6 +1315,9 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
         {
             pc = execute_block_cpp(&ctx, base, block);
         }
+    }
+    if (t_run_calls <= 32) {
+        trace_dynamic_state("run-exit", pc, stop, ctx);
     }
 }
 
