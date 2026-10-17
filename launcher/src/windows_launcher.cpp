@@ -1335,16 +1335,21 @@ void create_home() {
     g_preset = make_combo(page, ID_PRESET, 24, 235, 319,
                           {L"Custom", L"Performance", L"Balanced", L"Quality", L"Ultra"}, g_cfg.preset);
 
-    make_static(page, L"VULKAN 1.3", 24, 304, 180, 26, g_nav_font);
-    make_static(page, L"NATIVE WINDOWS RUNTIME", 24, 333, 260, 24, g_small);
+    // Keep technical badges on the right column. The previous layout placed
+    // them directly under the preparation status and caused text overlap on
+    // Windows display scaling above 100%.
+    make_static(page, L"VULKAN 1.3", 395, 296, 150, 26, g_nav_font);
+    make_static(page, L"60 / 120 / 180 / 240 FPS", 565, 296, 230, 26, g_nav_font);
+    make_static(page, L"NATIVE WINDOWS RUNTIME", 395, 327, 220, 24, g_small);
+    make_static(page, L"FSR 1  •  ASYNC SHADERS  •  LOW LATENCY", 395, 351, 380, 24, g_small);
 
     const wchar_t* home_status = select_game_play_text();
     if (valid_game(g_cfg.game)) home_status = g_exe.empty() ? preparation_required_text() : ready_game_text();
-    g_setup_status = make_static(page, home_status, 24, 344, 319, 32, g_small);
+    g_setup_status = make_static(page, home_status, 24, 298, 319, 54, g_small);
 
     g_prepare_progress = CreateWindowExW(
         0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_SMOOTH,
-        24, 378, 319, 14, page, nullptr, g_instance, nullptr);
+        24, 358, 319, 18, page, nullptr, g_instance, nullptr);
     if (g_prepare_progress) {
         SendMessageW(g_prepare_progress, PBM_SETRANGE32, 0, 100);
         SendMessageW(g_prepare_progress, PBM_SETBARCOLOR, 0, kBlue);
@@ -1352,12 +1357,9 @@ void create_home() {
         if (g_preparing.load()) ShowWindow(g_prepare_progress, SW_SHOW);
     }
 
-    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 402, 319, 48, true);
-    make_button(page, ID_SAVE, tr(T_SAVE), 24, 460, 150, 40, true);
-    make_button(page, ID_RESET, tr(T_RESET), 185, 460, 158, 40, true);
-
-    make_static(page, L"60 / 120 / 180 / 240 FPS", 395, 296, 330, 26, g_nav_font);
-    make_static(page, L"FSR 1  •  ASYNC SHADERS  •  LOW LATENCY", 395, 327, 360, 24, g_small);
+    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 390, 319, 52, true);
+    make_button(page, ID_SAVE, tr(T_SAVE), 24, 454, 150, 40, true);
+    make_button(page, ID_RESET, tr(T_RESET), 185, 454, 158, 40, true);
 }
 
 void create_display() {
