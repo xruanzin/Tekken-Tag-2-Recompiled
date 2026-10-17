@@ -34,13 +34,13 @@ if (-not $Version) { throw "Pass -Version vX.Y.Z or set .github\release-version.
 if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$') { throw "Invalid release version: $Version" }
 
 $BuildDir = Join-Path $Root "build\windows"
-$LauncherExe = Join-Path $BuildDir "Tekken Tag Tournament 2.exe"
+$LauncherExe = Join-Path $BuildDir "Tekken Tag Tournament 2 Player.exe"
 $QuickPlayExe = Join-Path $BuildDir "Play Tekken Tag Tournament 2.exe"
 
 if (-not $SkipBuild) {
     $CMake = Need-Command "cmake.exe"
     Write-Host "==> Building generic player launchers"
-    & $CMake --build $BuildDir --target ttt2_launcher ttt2_play
+    & $CMake --build $BuildDir --target ttt2_player_launcher ttt2_play
     if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE" }
 }
 
@@ -65,11 +65,23 @@ Copy-Item -LiteralPath $LauncherExe -Destination (Join-Path $PackageRoot "Tekken
 Copy-Item -LiteralPath $QuickPlayExe -Destination (Join-Path $PackageRoot "Play Tekken Tag Tournament 2.exe") -Force
 Copy-Item -LiteralPath (Join-Path $Root "tools\prepare-player.ps1") -Destination (Join-Path $ToolsDir "prepare-player.ps1") -Force
 
-foreach ($file in @("README.md", "README-Windows.txt", "LICENSE", "dependencies.lock.json", "vcpkg.json")) {
+foreach ($file in @("LICENSE")) {
     $source = Join-Path $Root $file
     if (Test-Path -LiteralPath $source -PathType Leaf) {
         Copy-Item -LiteralPath $source -Destination (Join-Path $PackageRoot $file) -Force
     }
+}
+
+$Theme = Join-Path $Root "launcher\assets\ttt2_launcher_theme.jpg"
+if (Test-Path -LiteralPath $Theme -PathType Leaf) {
+    $ThemeDest = Join-Path $PackageRoot "launcher\assets"
+    New-Item -ItemType Directory -Force $ThemeDest | Out-Null
+    Copy-Item -LiteralPath $Theme -Destination (Join-Path $ThemeDest "ttt2_launcher_theme.jpg") -Force
+}
+
+$ZArchiveCMake = Join-Path $Root "third_party\ZArchive\CMakeLists.txt"
+if (-not (Test-Path -LiteralPath $ZArchiveCMake -PathType Leaf)) {
+    throw "third_party\ZArchive is missing. Clone/update the repository with submodules before building the Player ZIP."
 }
 
 Write-Host "==> Packaging generic source needed for local preparation"
