@@ -69,7 +69,7 @@ if(WIN32)
 
     # Generic public Player launcher: same UI, but deliberately never links
     # a resource generated from the user's game dump. The Player ZIP ships
-    # project artwork as a normal file and prepares game-derived code locally.
+    # project artwork plus the prebuilt game-independent Windows runtime.
     add_executable(ttt2_player_launcher WIN32 launcher/src/windows_launcher.cpp)
     set_target_properties(ttt2_player_launcher PROPERTIES OUTPUT_NAME "Tekken Tag Tournament 2 Player")
     target_compile_features(ttt2_player_launcher PRIVATE cxx_std_20)
@@ -83,14 +83,14 @@ if(WIN32)
     ttt2_warnings(ttt2_play)
 endif()
 
-# Local static AOT runtime used for development/testing. Public Player ZIPs do
-# not ship this game-derived executable; the Player launcher prepares it locally
-# from the user's own supported RPX on first run.
+# Local static AOT runtime used for development/testing. Public Player ZIPs use
+# the game-independent dynamic runtime below and never ship generated Full-AOT code.
 set(TTT2_GENERATED_DIR "" CACHE PATH "cafe-recomp output directory")
 
-# Keep the experimental dynamic host available for development comparisons,
-# but never make it the default player/runtime target.
-option(TTT2_EXPERIMENTAL_DYNAMIC_HOST "Build the experimental dynamic PPC host" OFF)
+# Game-independent PowerPC host used by zero-install Windows Player releases.
+# It reads the supported RPX at runtime, JITs x64 blocks on demand and keeps a
+# persistent block cache. Keep the legacy option name for build compatibility.
+option(TTT2_EXPERIMENTAL_DYNAMIC_HOST "Build the generic dynamic PPC player runtime" ON)
 
 if(WIN32 AND NOT TTT2_GENERATED_DIR AND TTT2_EXPERIMENTAL_DYNAMIC_HOST)
     add_executable(ttt2_dynamic runtime/src/main.cpp runtime/src/dynamic_generated.cpp)
@@ -109,8 +109,8 @@ if(WIN32 AND NOT TTT2_GENERATED_DIR AND TTT2_EXPERIMENTAL_DYNAMIC_HOST)
     ttt2_warnings(ttt2_dynamic)
 endif()
 
-# Ahead-of-time static port. This target is used for local development and by
-# the first-run Player preparer on the player's own machine.
+# Ahead-of-time static port. This target remains available for local development,
+# profiling and comparison with the generic zero-install Player runtime.
 if(TTT2_GENERATED_DIR)
     include(${TTT2_GENERATED_DIR}/sources.cmake)
     add_library(ttt2_generated OBJECT ${CAFE_GENERATED_SOURCES})
