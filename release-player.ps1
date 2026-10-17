@@ -28,32 +28,46 @@ function Need-Command {
 
 if (-not $Version) {
     $VersionFile = Join-Path $Root ".github\release-version.txt"
-    if (Test-Path -LiteralPath $VersionFile) { $Version = (Get-Content -LiteralPath $VersionFile -Raw).Trim() }
+    if (Test-Path -LiteralPath $VersionFile) {
+        $Version = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+    }
 }
 if (-not $Version) { throw "Pass -Version vX.Y.Z or set .github\release-version.txt." }
-if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$') { throw "Invalid release version: $Version" }
+if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$') {
+    throw "Invalid release version: $Version"
+}
 
 $BuildDir = Join-Path $Root "build\windows"
 $LauncherExe = Join-Path $BuildDir "Tekken Tag Tournament 2 Player.exe"
 $QuickPlayExe = Join-Path $BuildDir "Play Tekken Tag Tournament 2.exe"
+$RuntimeExe = Join-Path $BuildDir "ttt2.exe"
 
 if (-not $SkipBuild) {
     $CMake = Need-Command "cmake.exe"
-    Write-Host "==> Building generic player launchers"
-    & $CMake --build $BuildDir --target ttt2_player_launcher ttt2_play
-    if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE" }
+
+    # Re-use the configured Windows build tree, but make sure the generic
+    # zero-install runtime target is enabled. No game RPX is required here.
+    if (-not (Test-Path -LiteralPath (Join-Path $BuildDir "CMakeCache.txt") -PathType Leaf)) {
+        throw "build\windows is not configured. Configure the Windows host build first."
+    }
+
+    Write-Host "==> Enabling generic zero-install runtime"
+    & $CMake -S $Root -B $BuildDir -DTTT2_EXPERIMENTAL_DYNAMIC_HOST=ON
+    if ($LASTEXITCODE -ne 0) { throw "CMake reconfigure failed with exit code $LASTEXITCODE" }
+
+    Write-Host "==> Building zero-install Windows Player"
+    & $CMake --build $BuildDir --target ttt2_dynamic ttt2_player_launcher ttt2_play
+    if ($LASTEXITCODE -ne 0) { throw "Player build failed with exit code $LASTEXITCODE" }
 }
 
-foreach ($required in @($LauncherExe, $QuickPlayExe, (Join-Path $Root "tools\prepare-player.ps1"))) {
+foreach ($required in @($LauncherExe, $QuickPlayExe, $RuntimeExe)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-        throw "Required player file is missing: $required"
+        throw "Required zero-install Player file is missing: $required"
     }
 }
 
 $DistRoot = Join-Path $Root "dist"
 $PackageRoot = Join-Path $DistRoot "ttt2-windows-player"
-$ToolsDir = Join-Path $PackageRoot "tools"
-$SourceDir = Join-Path $ToolsDir "source"
 $BinDir = Join-Path $PackageRoot "bin"
 $UserDir = Join-Path $PackageRoot "user"
 $OutDir = Join-Path $PackageRoot "out"
@@ -61,12 +75,14 @@ $OutDir = Join-Path $PackageRoot "out"
 $Git = Get-Command git.exe -ErrorAction SilentlyContinue
 $Commit = if ($Git) { (& git rev-parse HEAD).Trim() } else { "unknown" }
 
-if (Test-Path -LiteralPath $PackageRoot) { Remove-Item -Recurse -Force -LiteralPath $PackageRoot }
-New-Item -ItemType Directory -Force $PackageRoot, $ToolsDir, $SourceDir, $BinDir, $UserDir, $OutDir | Out-Null
+if (Test-Path -LiteralPath $PackageRoot) {
+    Remove-Item -Recurse -Force -LiteralPath $PackageRoot
+}
+New-Item -ItemType Directory -Force $PackageRoot, $BinDir, $UserDir, $OutDir | Out-Null
 
 Copy-Item -LiteralPath $LauncherExe -Destination (Join-Path $PackageRoot "Tekken Tag Tournament 2.exe") -Force
 Copy-Item -LiteralPath $QuickPlayExe -Destination (Join-Path $PackageRoot "Play Tekken Tag Tournament 2.exe") -Force
-Copy-Item -LiteralPath (Join-Path $Root "tools\prepare-player.ps1") -Destination (Join-Path $ToolsDir "prepare-player.ps1") -Force
+Copy-Item -LiteralPath $RuntimeExe -Destination (Join-Path $BinDir "ttt2-runtime.exe") -Force
 
 foreach ($file in @("LICENSE")) {
     $source = Join-Path $Root $file
@@ -75,9 +91,6 @@ foreach ($file in @("LICENSE")) {
     }
 }
 
-# Ship the project-owned launcher artwork as a normal asset. The generic
-# launcher deliberately does not embed any resource generated from the user's
-# game dump, but it can still load this non-game artwork at runtime.
 $ThemeSource = Join-Path $Root "launcher\assets\ttt2_launcher_theme.jpg"
 if (Test-Path -LiteralPath $ThemeSource -PathType Leaf) {
     $ThemeDest = Join-Path $PackageRoot "launcher\assets"
@@ -85,49 +98,17 @@ if (Test-Path -LiteralPath $ThemeSource -PathType Leaf) {
     Copy-Item -LiteralPath $ThemeSource -Destination (Join-Path $ThemeDest "ttt2_launcher_theme.jpg") -Force
 }
 
-$ZArchiveCMake = Join-Path $Root "third_party\ZArchive\CMakeLists.txt"
-if (-not (Test-Path -LiteralPath $ZArchiveCMake -PathType Leaf)) {
-    throw "third_party\ZArchive is missing. Clone/update the repository with submodules before building the Player ZIP."
-}
-
-Write-Host "==> Packaging generic source needed for local preparation"
-$Robo = Join-Path $env:SystemRoot "System32\robocopy.exe"
-$excludeDirs = @(
-    ".git", "build", "generated", "dist", ".tools", ".vcpkg-cache",
-    "user", "out", ".vs", ".idea"
-)
-$roboArgs = @(
-    $Root, $SourceDir, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1",
-    "/XD"
-) + $excludeDirs
-& $Robo @roboArgs | Out-Null
-$RoboCode = $LASTEXITCODE
-if ($RoboCode -gt 7) { throw "Source packaging failed with robocopy exit code $RoboCode" }
-
-# Record the exact pinned revisions copied into the Player source snapshot.
-# Nested .git directories are intentionally excluded from the ZIP, so the
-# first-run preparer verifies these vendored dependencies through this manifest.
-$DependencyLock = Get-Content -LiteralPath (Join-Path $Root "dependencies.lock.json") -Raw | ConvertFrom-Json
-$Manifest = [ordered]@{
-    format = 1
-    generated_from_commit = $Commit
-    dependencies = [ordered]@{
-        ZArchive = [string]$DependencyLock.ZArchive.revision
-        addrlib = [string]$DependencyLock.addrlib.revision
-    }
-}
-$Manifest | ConvertTo-Json -Depth 4 |
-    Set-Content -LiteralPath (Join-Path $SourceDir "player-source-manifest.json") -Encoding UTF8
-
-# Never ship any locally generated/compiled game-derived runtime.
+# The Player is intentionally game-independent. It ships our generic runtime,
+# never the user's RPX or generated Full-AOT output.
 $forbidden = @(
-    (Join-Path $PackageRoot "bin\ttt2-runtime.exe"),
-    (Join-Path $SourceDir "generated\ttt2-full"),
-    (Join-Path $SourceDir "generated\ttt2")
+    (Join-Path $PackageRoot "code\Tekken.rpx"),
+    (Join-Path $PackageRoot "generated"),
+    (Join-Path $PackageRoot "tools\prepare-player.ps1"),
+    (Join-Path $PackageRoot "tools\source")
 )
 foreach ($path in $forbidden) {
     if (Test-Path -LiteralPath $path) {
-        throw "Refusing to create generic Player ZIP because a game-derived runtime/output was found: $path"
+        throw "Refusing to create zero-install Player ZIP because an unwanted build/game file was found: $path"
     }
 }
 
@@ -139,28 +120,32 @@ TTT2 Recompiled - Windows Player
 3. Choose your own extracted EU v16 game folder (the folder containing code\Tekken.rpx).
 4. Press PLAY.
 
-On the first launch the launcher prepares a local native runtime from your own Tekken.rpx.
-A progress bar shows the current preparation stage. The generated runtime stays only on your PC
-under bin\ttt2-runtime.exe. Later launches start directly.
+That is all. This release already includes the generic Windows runtime at:
+  bin\ttt2-runtime.exe
 
-If compiler components are missing, the preparer attempts to install the required Windows build
-tools automatically through winget. This one-time setup can be large and can take several minutes.
+The player does NOT install CMake, Ninja, LLVM, Visual Studio, Python, Git or vcpkg.
+The player does NOT perform a Full-AOT compilation before the game starts.
 
-No Tekken game files or precompiled game-derived AOT runtime are included in this ZIP.
+The runtime reads the supported Tekken.rpx from your selected game directory and executes
+PowerPC code through the built-in dynamic host. Native x64 block JIT and persistent code
+caches are produced automatically while the game runs.
+
+No Tekken game files are included in this ZIP.
 "@ | Set-Content -LiteralPath (Join-Path $PackageRoot "README-PLAYER.txt") -Encoding UTF8
 
-Set-Content -LiteralPath (Join-Path $BinDir "README.txt") -Encoding UTF8 -Value "The first-run preparer creates your local ttt2-runtime.exe here."
-Set-Content -LiteralPath (Join-Path $UserDir "README.txt") -Encoding UTF8 -Value "Settings, saves, preparation log and persistent caches are stored here."
-Set-Content -LiteralPath (Join-Path $OutDir "README.txt") -Encoding UTF8 -Value "Reusable runtime caches are stored here."
+Set-Content -LiteralPath (Join-Path $UserDir "README.txt") -Encoding UTF8 -Value "Settings, saves and runtime logs are stored here."
+Set-Content -LiteralPath (Join-Path $OutDir "README.txt") -Encoding UTF8 -Value "Persistent code and renderer caches are stored here."
 
 @"
 TTT2 Recompiled Windows Player
 Version: $Version
 Git commit: $Commit
-Package type: generic first-run local AOT preparer
+Package type: zero-install generic Windows runtime
 Supported game: TEKKEN TAG TOURNAMENT 2 Wii U EDITION EU v16
 Expected Tekken.rpx SHA-256: fc0270465d384386f67804e48716e30bfbe85a5a1004e3a6bfe3ac75f9de5019
-Game-derived AOT runtime included: NO
+Generic runtime included: YES (bin\ttt2-runtime.exe)
+Game-derived Full-AOT runtime included: NO
+Compiler/toolchain required by player: NO
 "@ | Set-Content -LiteralPath (Join-Path $PackageRoot "BUILD-INFO.txt") -Encoding UTF8
 
 New-Item -ItemType Directory -Force $DistRoot | Out-Null
@@ -181,17 +166,20 @@ $Notes = Join-Path $DistRoot "player-release-notes.md"
 Download **TTT2-Windows-$Version.zip**, extract it, open **Tekken Tag Tournament 2.exe**,
 choose your own extracted EU v16 game folder and press **PLAY**.
 
-The first start performs a one-time local PowerPC -> x86-64 preparation from the player's own
-Tekken.rpx. The launcher displays the current stage and a progress bar. Future starts use the
-prepared local runtime directly.
+This is a zero-install Player build. The generic Windows runtime is already included, so the
+player does not install compilers and does not perform a Full-AOT compilation on first launch.
 
-No game files and no precompiled game-derived AOT runtime are included in the download.
+The runtime validates the selected Tekken.rpx and uses the built-in dynamic PowerPC host with
+native x64 block JIT and persistent caches while the game runs.
+
+No game files are included in the download.
 "@ | Set-Content -LiteralPath $Notes -Encoding UTF8
 
 Write-Host ""
-Write-Host "GENERIC PLAYER PACKAGE READY"
-Write-Host "  ZIP:    $Zip"
-Write-Host "  Hashes: $Checksums"
+Write-Host "ZERO-INSTALL PLAYER PACKAGE READY"
+Write-Host "  Runtime: bin\ttt2-runtime.exe"
+Write-Host "  ZIP:     $Zip"
+Write-Host "  Hashes:  $Checksums"
 
 if ($Publish) {
     $Gh = Need-Command "gh.exe"
@@ -200,10 +188,6 @@ if ($Publish) {
 
     $Repo = "xruanzin/Tekken-Tag-2-Recompiled"
 
-    # A missing release is the expected first-publish case. Windows PowerShell
-    # 5.1 can turn native stderr into a terminating RemoteException when
-    # ErrorActionPreference is Stop, so probe with Continue and inspect the
-    # native exit code explicitly.
     $PreviousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -223,5 +207,5 @@ if ($Publish) {
         & $Gh release create $Version $Zip $Checksums --repo $Repo --target windows-host --title "TTT2 Recompiled Windows $Version" --notes-file $Notes
         if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
     }
-    Write-Host "Published generic Player ZIP: https://github.com/$Repo/releases/tag/$Version"
+    Write-Host "Published zero-install Player ZIP: https://github.com/$Repo/releases/tag/$Version"
 }
