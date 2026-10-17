@@ -19,6 +19,16 @@ if ($env:OS -ne "Windows_NT") {
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
+function Write-PlayerProgress {
+    param(
+        [Parameter(Mandatory = $true)][int]$Percent,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    if ($env:TTT2_PLAYER_PROGRESS -eq "1") {
+        Write-Output ("TTT2_PROGRESS|{0}|{1}" -f ([Math]::Max(0, [Math]::Min(100, $Percent))), $Message)
+    }
+}
+
 function Resolve-ToolPath {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -145,6 +155,7 @@ This port requires the European v16 executable:
 }
 
 Write-Host "==> RPX verified: European v16"
+Write-PlayerProgress 8 "Jogo EU v16 verificado"
 
 # Build Windows resources. Launcher artwork is embedded independently of
 # the optional Wii U icon, so WUA/extracted layouts cannot lose the Home art.
@@ -199,6 +210,7 @@ if ($Clean -and (Test-Path -LiteralPath $BuildPath)) {
     Remove-Item -Recurse -Force -LiteralPath $BuildPath
 }
 
+Write-PlayerProgress 12 "Preparando dependências do port"
 Write-Host "==> Fetching pinned project dependencies"
 & $PythonExe (Join-Path $Root "tools\setup_deps.py")
 if ($LASTEXITCODE -ne 0) {
@@ -298,12 +310,14 @@ if (Test-Path -LiteralPath $CacheFile) {
     }
 }
 
+Write-PlayerProgress 28 "Configurando ferramentas do port"
 Write-Host "==> Configuring Windows host tools"
 & $CMakeExe @CommonArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake configure failed"
 }
 
+Write-PlayerProgress 35 "Compilando ferramentas de preparação"
 Write-Host "==> Building cafe-recomp and host runtime"
 & $CMakeExe --build $BuildPath --target cafe-recomp cafe_runtime
 if ($LASTEXITCODE -ne 0) {
@@ -317,6 +331,7 @@ if (-not (Test-Path -LiteralPath $Recompiler)) {
 
 New-Item -ItemType Directory -Force $GeneratedPath | Out-Null
 
+Write-PlayerProgress 50 "Recompilando o código PowerPC do jogo"
 Write-Host "==> Generating local C++ from your RPX"
 $recompArgs = @($RpxPath, $GeneratedPath)
 if ($FullAot) {
@@ -328,6 +343,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "cafe-recomp failed"
 }
 
+Write-PlayerProgress 64 "Preparando o runtime nativo"
 Write-Host "==> Configuring final game executable"
 & $CMakeExe @CommonArgs "-DTTT2_GENERATED_DIR=$GeneratedPath"
 if ($LASTEXITCODE -ne 0) {
@@ -335,10 +351,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if ($GameOnly) {
-    Write-Host "==> Building ttt2.exe"
+    Write-PlayerProgress 70 "Compilando o executável nativo"
+Write-Host "==> Building ttt2.exe"
     & $CMakeExe --build $BuildPath --target ttt2
 } else {
-    Write-Host "==> Building static ttt2.exe and Windows launchers"
+    Write-PlayerProgress 70 "Compilando o executável nativo"
+Write-Host "==> Building static ttt2.exe and Windows launchers"
     & $CMakeExe --build $BuildPath --target ttt2 ttt2_launcher ttt2_play
 }
 if ($LASTEXITCODE -ne 0) {
@@ -377,6 +395,7 @@ if (-not $GameOnly) {
 }
 
 Write-Host ""
+Write-PlayerProgress 96 "Finalizando a preparação"
 Write-Host "SUCCESS"
 Write-Host "Static runtime: $FinalExe"
 if ($LauncherRoot) { Write-Host "Launcher:       $LauncherRoot" }
