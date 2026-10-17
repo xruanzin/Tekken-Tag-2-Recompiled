@@ -595,13 +595,13 @@ const wchar_t* ready_game_text() {
 
 const wchar_t* preparation_required_text() {
     static constexpr const wchar_t* labels[] = {
-        L"Jogo encontrado. A primeira execução fará a preparação local.",
-        L"Game found. First launch will prepare it locally.",
-        L"Juego encontrado. El primer inicio hará la preparación local.",
-        L"Jeu trouvé. Le premier lancement effectuera la préparation locale.",
-        L"Spiel gefunden. Beim ersten Start wird es lokal vorbereitet.",
-        L"Gioco trovato. Il primo avvio eseguirà la preparazione locale.",
-        L"ゲームを確認しました。初回起動時にローカル準備を行います。"
+        L"Runtime do release não encontrado. Extraia o ZIP completo novamente.",
+        L"Release runtime not found. Extract the complete ZIP again.",
+        L"No se encontró el runtime del release. Extrae de nuevo el ZIP completo.",
+        L"Runtime du release introuvable. Extrayez de nouveau le ZIP complet.",
+        L"Release-Runtime nicht gefunden. Entpacke das vollständige ZIP erneut.",
+        L"Runtime del release non trovato. Estrai di nuovo lo ZIP completo.",
+        L"リリースのランタイムが見つかりません。ZIP 全体を再展開してください。"
     };
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
@@ -997,9 +997,9 @@ bool verify_game_source(const fs::path& game, bool show_error) {
             break;
         case 5:
             message =
-                L"Your game source may be correct, but this launcher found an old or experimental TTT2 runtime.\n\n"
-                L"Extract a fresh v1.0.0 package into an empty folder and do not mix it with files from older "
-                L"preview builds. The expected runtime is bin\\ttt2-runtime.exe.";
+                L"The packaged TTT2 runtime is incompatible with this launcher.\n\n"
+                L"Extract a fresh release into an empty folder. The expected runtime is "
+                L"bin\\ttt2-runtime.exe.";
             break;
         default:
             if (exit_code == 0xC0000409u) {
@@ -1347,19 +1347,13 @@ void create_home() {
     if (valid_game(g_cfg.game)) home_status = g_exe.empty() ? preparation_required_text() : ready_game_text();
     g_setup_status = make_static(page, home_status, 24, 298, 319, 54, g_small);
 
-    g_prepare_progress = CreateWindowExW(
-        0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_SMOOTH,
-        24, 358, 319, 18, page, nullptr, g_instance, nullptr);
-    if (g_prepare_progress) {
-        SendMessageW(g_prepare_progress, PBM_SETRANGE32, 0, 100);
-        SendMessageW(g_prepare_progress, PBM_SETBARCOLOR, 0, kBlue);
-        SendMessageW(g_prepare_progress, PBM_SETBKCOLOR, 0, kPanel2);
-        if (g_preparing.load()) ShowWindow(g_prepare_progress, SW_SHOW);
-    }
-
-    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 390, 319, 52, true);
-    make_button(page, ID_SAVE, tr(T_SAVE), 24, 454, 150, 40, true);
-    make_button(page, ID_RESET, tr(T_RESET), 185, 454, 158, 40, true);
+    // Player releases are zero-install: there is no compiler/preparation stage.
+    // Keep the primary action close to the ready state instead of reserving
+    // vertical space for the old first-run progress bar.
+    g_prepare_progress = nullptr;
+    g_play = make_button(page, ID_PLAY, tr(T_PLAY), 24, 365, 319, 52, true);
+    make_button(page, ID_SAVE, tr(T_SAVE), 24, 429, 150, 40, true);
+    make_button(page, ID_RESET, tr(T_RESET), 185, 429, 158, 40, true);
 }
 
 void create_display() {
@@ -1649,7 +1643,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             sync_from_controls();
             g_exe = find_game_executable();
             if (g_exe.empty()) {
-                begin_first_run_preparation();
+                MessageBoxW(hwnd,
+                            L"O runtime pronto do Windows não foi encontrado em bin\\ttt2-runtime.exe.\n\n"
+                            L"Extraia novamente o release completo em uma pasta vazia.",
+                            L"Tekken Tag Tournament 2", MB_ICONERROR | MB_OK);
             } else if (launch_game()) {
                 DestroyWindow(hwnd);
             }
