@@ -40,7 +40,7 @@ if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$') {
 $BuildDir = Join-Path $Root "build\windows"
 $LauncherExe = Join-Path $BuildDir "Tekken Tag Tournament 2 Player.exe"
 $QuickPlayExe = Join-Path $BuildDir "Play Tekken Tag Tournament 2.exe"
-$RuntimeExe = Join-Path $BuildDir "ttt2.exe"
+$RuntimeExe = Join-Path $BuildDir "ttt2-runtime.exe"
 
 if (-not $SkipBuild) {
     $CMake = Need-Command "cmake.exe"
@@ -52,7 +52,7 @@ if (-not $SkipBuild) {
     }
 
     Write-Host "==> Enabling generic zero-install runtime"
-    & $CMake -S $Root -B $BuildDir -DTTT2_EXPERIMENTAL_DYNAMIC_HOST=ON
+    & $CMake -S $Root -B $BuildDir -DTTT2_GENERATED_DIR= -DTTT2_EXPERIMENTAL_DYNAMIC_HOST=ON
     if ($LASTEXITCODE -ne 0) { throw "CMake reconfigure failed with exit code $LASTEXITCODE" }
 
     Write-Host "==> Building zero-install Windows Player"
