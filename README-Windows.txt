@@ -24,7 +24,7 @@ The release already contains:
 
 The launcher validates the selected code\Tekken.rpx and starts that runtime directly.
 The runtime reads the PowerPC executable from the selected game directory, translates code
-through its built-in dynamic host and emits native x64 blocks on demand. Reusable block and
+through its built-in dynamic host and executes decoded PowerPC blocks on demand. Reusable block and
 renderer caches are kept under out\ so later execution can reuse warmed work.
 
 The player does NOT install or require:
