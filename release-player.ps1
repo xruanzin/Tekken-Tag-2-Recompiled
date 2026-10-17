@@ -58,6 +58,9 @@ $BinDir = Join-Path $PackageRoot "bin"
 $UserDir = Join-Path $PackageRoot "user"
 $OutDir = Join-Path $PackageRoot "out"
 
+$Git = Get-Command git.exe -ErrorAction SilentlyContinue
+$Commit = if ($Git) { (& git rev-parse HEAD).Trim() } else { "unknown" }
+
 if (Test-Path -LiteralPath $PackageRoot) { Remove-Item -Recurse -Force -LiteralPath $PackageRoot }
 New-Item -ItemType Directory -Force $PackageRoot, $ToolsDir, $SourceDir, $BinDir, $UserDir, $OutDir | Out-Null
 
@@ -90,6 +93,21 @@ $roboArgs = @(
 & $Robo @roboArgs | Out-Null
 $RoboCode = $LASTEXITCODE
 if ($RoboCode -gt 7) { throw "Source packaging failed with robocopy exit code $RoboCode" }
+
+# Record the exact pinned revisions copied into the Player source snapshot.
+# Nested .git directories are intentionally excluded from the ZIP, so the
+# first-run preparer verifies these vendored dependencies through this manifest.
+$DependencyLock = Get-Content -LiteralPath (Join-Path $Root "dependencies.lock.json") -Raw | ConvertFrom-Json
+$Manifest = [ordered]@{
+    format = 1
+    generated_from_commit = $Commit
+    dependencies = [ordered]@{
+        ZArchive = [string]$DependencyLock.ZArchive.revision
+        addrlib = [string]$DependencyLock.addrlib.revision
+    }
+}
+$Manifest | ConvertTo-Json -Depth 4 |
+    Set-Content -LiteralPath (Join-Path $SourceDir "player-source-manifest.json") -Encoding UTF8
 
 # Never ship any locally generated/compiled game-derived runtime.
 $forbidden = @(
@@ -125,8 +143,6 @@ Set-Content -LiteralPath (Join-Path $BinDir "README.txt") -Encoding UTF8 -Value 
 Set-Content -LiteralPath (Join-Path $UserDir "README.txt") -Encoding UTF8 -Value "Settings, saves, preparation log and persistent caches are stored here."
 Set-Content -LiteralPath (Join-Path $OutDir "README.txt") -Encoding UTF8 -Value "Reusable runtime caches are stored here."
 
-$Git = Get-Command git.exe -ErrorAction SilentlyContinue
-$Commit = if ($Git) { (& git rev-parse HEAD).Trim() } else { "unknown" }
 @"
 TTT2 Recompiled Windows Player
 Version: $Version
