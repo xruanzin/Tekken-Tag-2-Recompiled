@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
@@ -255,6 +256,10 @@ HFONT g_font = nullptr, g_small = nullptr, g_title = nullptr, g_nav_font = nullp
 HBRUSH g_bg_brush = nullptr, g_panel_brush = nullptr, g_edit_brush = nullptr;
 
 HWND g_game_edit = nullptr, g_preset = nullptr, g_play = nullptr, g_setup_status = nullptr;
+HWND g_prepare_progress = nullptr, g_prepare_stage = nullptr;
+std::atomic<bool> g_preparing{false};
+constexpr UINT WM_APP_PREP_PROGRESS = WM_APP + 40;
+constexpr UINT WM_APP_PREP_DONE = WM_APP + 41;
 HWND g_display_mode = nullptr, g_output_res = nullptr, g_fps = nullptr, g_fill = nullptr;
 HWND g_render_scale = nullptr, g_aa = nullptr, g_upscaler = nullptr, g_aniso = nullptr;
 HWND g_sharpen = nullptr, g_sharpen_value = nullptr, g_async_shaders = nullptr;
@@ -583,6 +588,32 @@ const wchar_t* ready_game_text() {
         L"Juego encontrado. Listo para jugar.", L"Jeu trouvé. Prêt à jouer.",
         L"Spiel gefunden. Spielbereit.", L"Gioco trovato. Pronto per giocare.",
         L"ゲームを確認しました。プレイできます。"
+    };
+    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
+}
+
+const wchar_t* preparation_required_text() {
+    static constexpr const wchar_t* labels[] = {
+        L"Jogo encontrado. A primeira execução fará a preparação local.",
+        L"Game found. First launch will prepare it locally.",
+        L"Juego encontrado. El primer inicio hará la preparación local.",
+        L"Jeu trouvé. Le premier lancement effectuera la préparation locale.",
+        L"Spiel gefunden. Beim ersten Start wird es lokal vorbereitet.",
+        L"Gioco trovato. Il primo avvio eseguirà la preparazione locale.",
+        L"ゲームを確認しました。初回起動時にローカル準備を行います。"
+    };
+    return labels[std::clamp(g_cfg.ui_language, 0, 6)];
+}
+
+const wchar_t* preparing_game_text() {
+    static constexpr const wchar_t* labels[] = {
+        L"Preparando o jogo pela primeira vez...",
+        L"Preparing the game for the first time...",
+        L"Preparando el juego por primera vez...",
+        L"Préparation du jeu pour la première fois...",
+        L"Spiel wird zum ersten Mal vorbereitet...",
+        L"Preparazione del gioco al primo avvio...",
+        L"初回起動の準備をしています..."
     };
     return labels[std::clamp(g_cfg.ui_language, 0, 6)];
 }
