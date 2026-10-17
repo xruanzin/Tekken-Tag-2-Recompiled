@@ -67,6 +67,15 @@ if(WIN32)
         target_sources(ttt2_launcher PRIVATE "${TTT2_WINDOWS_RESOURCE}")
     endif()
 
+    # Generic public Player launcher: same UI, but deliberately never links
+    # a resource generated from the user's game dump. The Player ZIP ships
+    # project artwork as a normal file and prepares game-derived code locally.
+    add_executable(ttt2_player_launcher WIN32 launcher/src/windows_launcher.cpp)
+    set_target_properties(ttt2_player_launcher PROPERTIES OUTPUT_NAME "Tekken Tag Tournament 2 Player")
+    target_compile_features(ttt2_player_launcher PRIVATE cxx_std_20)
+    target_link_libraries(ttt2_player_launcher PRIVATE ole32 shell32 uuid comctl32 dwmapi uxtheme gdiplus gdi32 user32)
+    ttt2_warnings(ttt2_player_launcher)
+
     add_executable(ttt2_play WIN32 launcher/src/play_windows.cpp)
     set_target_properties(ttt2_play PROPERTIES OUTPUT_NAME "Play Tekken Tag Tournament 2")
     target_compile_features(ttt2_play PRIVATE cxx_std_20)
@@ -74,9 +83,9 @@ if(WIN32)
     ttt2_warnings(ttt2_play)
 endif()
 
-# The player release is the ahead-of-time recompiled port. The maintainer
-# builds it once from the supported RPX, then ships that ready-to-run binary.
-# End users never run cafe-recomp/CMake/Clang.
+# Local static AOT runtime used for development/testing. Public Player ZIPs do
+# not ship this game-derived executable; the Player launcher prepares it locally
+# from the user's own supported RPX on first run.
 set(TTT2_GENERATED_DIR "" CACHE PATH "cafe-recomp output directory")
 
 # Keep the experimental dynamic host available for development comparisons,
@@ -100,8 +109,8 @@ if(WIN32 AND NOT TTT2_GENERATED_DIR AND TTT2_EXPERIMENTAL_DYNAMIC_HOST)
     ttt2_warnings(ttt2_dynamic)
 endif()
 
-# Ahead-of-time static port. This is also the executable used in public player
-# packages; only the maintainer needs the RPX/toolchain during release creation.
+# Ahead-of-time static port. This target is used for local development and by
+# the first-run Player preparer on the player's own machine.
 if(TTT2_GENERATED_DIR)
     include(${TTT2_GENERATED_DIR}/sources.cmake)
     add_library(ttt2_generated OBJECT ${CAFE_GENERATED_SOURCES})
