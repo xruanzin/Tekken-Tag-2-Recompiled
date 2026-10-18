@@ -1100,17 +1100,11 @@ void refresh_hot_block_cache_epoch() {
     }
 }
 
-Block* get_or_build_block(uint32_t start) {
-    HotBlockEntry& hot = t_hot_blocks[(start >> 2) & (kHotBlockCacheSize - 1)];
-    if (hot.block != nullptr && hot.address == start) {
-        return hot.block;
-    }
-
+Block* get_or_build_block_slow(uint32_t start) {
     {
         std::shared_lock lock(g_block_mutex);
         const auto found = g_blocks.find(start);
         if (found != g_blocks.end()) {
-            hot = {start, found->second.get()};
             return found->second.get();
         }
     }
@@ -1132,17 +1126,30 @@ Block* get_or_build_block(uint32_t start) {
 
     std::lock_guard lock(g_block_mutex);
     if (const auto found = g_blocks.find(start); found != g_blocks.end()) {
-        hot = {start, found->second.get()};
         return found->second.get();
     }
     Block* raw = block.get();
     g_blocks.emplace(start, std::move(block));
-    hot = {start, raw};
     remember_block_locked(start);
 #ifdef _WIN32
     raw->native = emit_block_thunk(raw);
 #endif
     return raw;
+}
+
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
+Block* get_or_build_block(uint32_t start) {
+    HotBlockEntry& hot = t_hot_blocks[(start >> 2) & (kHotBlockCacheSize - 1)];
+    if (hot.block != nullptr && hot.address == start) {
+        return hot.block;
+    }
+    Block* block = get_or_build_block_slow(start);
+    if (block != nullptr) {
+        hot = {start, block};
+    }
+    return block;
 }
 
 } // namespace
