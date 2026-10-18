@@ -97,15 +97,27 @@ bool audio_device_active() { return g_stream != nullptr; }
 
 void queue_audio(const float* frames, uint32_t count) {
     if (g_stream) {
-        // A stalled device: drop the backlog rather than let it grow.
         const uint32_t queued = queued_audio_frames();
         if (queued > kAudioRate / 4) {
-            std::fprintf(stderr, "ttt2: audio: output backlog over 250 ms, dropped\n");
-            SDL_ClearAudioStream(g_stream);
+            // Do not clear the entire SDL stream: that produces an audible
+            // discontinuity. Drop only this newly generated 3 ms frame and let
+            // the existing queue naturally drain toward the target.
+            static uint32_t backlog_reports = 0;
+            if ((backlog_reports++ & 0x3F) == 0) {
+                std::fprintf(stderr, "ttt2: audio: output backlog over 250 ms; draining without stream reset\n");
+            }
+            if (g_dump) dump(frames, count);
+            return;
         } else if (queued < count) {
-            // About to run dry: refill to the target with silence.
+            // About to run dry: refill enough safety headroom once. The AX
+            // clock then accelerates briefly to replace silence with real
+            // mixed frames while the device keeps playing continuously.
             static const float silence[2 * kAudioQueueTarget] = {};
-            SDL_PutAudioStreamData(g_stream, silence, static_cast<int>((kAudioQueueTarget - queued) * 2 * sizeof(float)));
+            const uint32_t fill = kAudioQueueTarget > queued ? kAudioQueueTarget - queued : 0;
+            if (fill != 0) {
+                SDL_PutAudioStreamData(g_stream, silence,
+                                       static_cast<int>(fill * 2 * sizeof(float)));
+            }
         }
         if (g_volume == 1.0f) {
             SDL_PutAudioStreamData(g_stream, frames, static_cast<int>(count * 2 * sizeof(float)));
