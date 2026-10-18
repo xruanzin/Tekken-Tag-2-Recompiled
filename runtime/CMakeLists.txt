@@ -84,8 +84,13 @@ target_link_libraries(cafe_runtime PUBLIC cafe_rpx cafe_ppc_decode cafe_title Op
 ttt2_warnings(cafe_runtime)
 if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(cafe_runtime PRIVATE /O2 /arch:AVX2 /clang:-Wno-missing-field-initializers)
+    # The dynamic PPC executor is the dominant CPU cost of the zero-install
+    # Player. Let Clang spend more optimization effort on this one translation
+    # unit without inflating compile time for the whole Vulkan/runtime tree.
+    set_source_files_properties(src/dynamic.cpp PROPERTIES COMPILE_OPTIONS "/clang:-O3")
 elseif(NOT MSVC)
     target_compile_options(cafe_runtime PRIVATE -Wno-missing-field-initializers)
+    set_source_files_properties(src/dynamic.cpp PROPERTIES COMPILE_OPTIONS "-O3")
 endif()
 
 # The title's file formats and the pictures and texts made from them
