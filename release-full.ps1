@@ -212,26 +212,28 @@ Extract it, open **Tekken Tag Tournament 2.exe**, choose your own extracted EU v
 The runtime is already included at **bin\ttt2-runtime.exe**.
 No compiler or first-run build is required.
 
-### Gameplay, graphics and audio performance
-This release adds the fourth performance/compatibility pass for the zero-install runtime:
+### Gameplay, texture correctness, audio and JIT performance
+This release adds the fifth performance/compatibility pass for the zero-install runtime:
 
-- the Windows Tier-1 PPC-to-x64 JIT now emits the most common unconditional branch,
-  tail-call and return endings directly in native x64 instead of calling back into the
-  generic C++ instruction executor at the end of those blocks;
-- when render scale is above 1x, intermediate half/quarter-resolution effect buffers now
-  stay at native Wii U resolution by default. This both reduces GPU work and preserves
-  render-to-texture layouts that were being distorted by upscaling;
-- shaders and Vulkan pipelines required by the current draw are promoted to the front of
-  their asynchronous compile queues, instead of being skipped while unrelated first-use
-  work drains ahead of them;
-- 6C/12T hosts use two shader workers and two texture-detile workers rather than three of
-  each, leaving CPU headroom for guest execution, rendering and audio during scene loads;
-- the AX mixer uses dedicated high-priority Windows scheduling with an ideal-processor
-  hint, while retaining the larger playback queue and non-destructive underrun recovery;
-- boot_trace now reports Tier-1 JIT coverage plus audio queue/underrun counters so the
-  next performance capture can separate PPC, graphics and audio stalls precisely;
-- the indexed render-target lookup, bounded shader/pipeline waits, persistent SPIR-V,
-  texture and Vulkan caches, Clang -O3 executor and predecoded operands remain enabled.
+- texture uploads return to the renderer's original deterministic path by default:
+  mip levels are detiled from guest memory on the render thread and uploaded immediately,
+  avoiding inconsistent snapshots from the experimental parallel detile/RAM-disk cache;
+- the experimental texture cache remains available only with TTT2_TEXTURE_CACHE=1 for
+  development testing; normal Player builds prioritize correct 3D materials/textures;
+- the Windows Tier-1 PPC-to-x64 JIT now emits conditional bc/bclr/bcctr tails directly
+  in native x64 in addition to unconditional branches/returns, removing another frequent
+  return to the generic C++ executor in loops and game logic;
+- performance telemetry now reports ppc_native_pct plus native/C++ block counts so JIT
+  coverage during real gameplay can be measured directly from boot_trace.log;
+- the AX playback target increases to about 128 ms, and after a severe stall AX may
+  catch up at most two 3 ms frames when the device queue is low; boot_trace also reports
+  slow guest audio-callback timing to distinguish SDL starvation from guest-code stalls;
+- shader, Vulkan pipeline and dynamic-code caches are now stored under a persistent
+  LOCALAPPDATA cache directory instead of the extracted release folder, so new release
+  ZIPs reuse compiled work from earlier runs;
+- cold pipeline caches use a larger but still bounded per-frame compile wait budget to
+  preserve required draws instead of dropping large parts of a newly entered scene;
+- persistent cache state is written to boot_trace so warm-vs-cold behavior is explicit.
 
 No Tekken game files are included.
 "@ | Set-Content -LiteralPath $Notes -Encoding UTF8
