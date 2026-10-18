@@ -58,6 +58,7 @@ thread_local uint64_t t_host_calls = 0;
 thread_local uint64_t t_run_calls = 0;
 thread_local auto t_last_progress = std::chrono::steady_clock::now();
 bool g_full_instruction_trace = false;
+bool g_dynamic_boot_trace = false;
 
 void trace_dynamic_state(const char* kind, uint32_t pc, uint32_t stop,
                          const PPCContext& ctx) {
@@ -107,7 +108,7 @@ struct HotBlockEntry {
     uint32_t address{};
     Block* block{};
 };
-constexpr size_t kHotBlockCacheSize = 4096;
+constexpr size_t kHotBlockCacheSize = 32768;
 thread_local std::array<HotBlockEntry, kHotBlockCacheSize> t_hot_blocks{};
 thread_local uint64_t t_hot_block_epoch = 0;
 std::atomic<uint64_t> g_hot_block_epoch{1};
@@ -140,7 +141,7 @@ struct ImportBinding {
 };
 
 std::mutex g_mutex;
-bool g_enabled = false;
+std::atomic<bool> g_enabled{false};
 std::vector<CodeSection> g_code;
 std::unordered_map<uint32_t, uint32_t> g_rel24_targets;
 std::unordered_map<uint32_t, ImportBinding> g_imports;
@@ -434,6 +435,9 @@ void fill_write(PPCContext& ctx, uint32_t d, double value) {
     ctx.f[d].ps1 = value;
 }
 
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
 uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t a = ins.address;
     const uint32_t w = ins.word;
@@ -1024,18 +1028,21 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
 }
 
 uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
-    uint32_t next = block->start;
-    if (!g_full_instruction_trace && !block->instructions.empty()) {
-        const Decoded* tail = block->instructions.back();
+    const size_t count = block->instructions.size();
+    if (count == 0) return block->start;
+
+    const Decoded* tail = block->instructions.back();
+    if (!g_full_instruction_trace) {
         remember_instruction(tail->address, tail->word);
     }
-    for (const Decoded* ins : block->instructions) {
-        next = execute_one(*ctx, base, *ins);
-        if (next != ins->address + 4 || ends_block(ins->op)) {
-            return next;
-        }
+
+    // get_or_build_block() guarantees that control-flow instructions only
+    // occur at the tail. Avoid the per-instruction next-PC comparison and
+    // ends_block() switch in the hot interpreter loop.
+    for (size_t i = 0; i + 1 < count; ++i) {
+        (void)execute_one(*ctx, base, *block->instructions[i]);
     }
-    return next;
+    return execute_one(*ctx, base, *tail);
 }
 
 #ifdef _WIN32
@@ -1144,6 +1151,8 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     g_hot_block_epoch.fetch_add(1, std::memory_order_relaxed);
     const char* trace_option = std::getenv("TTT2_TRACE_GUEST");
     g_full_instruction_trace = trace_option && *trace_option == '1';
+    const char* boot_trace_option = std::getenv("TTT2_TRACE_DYNAMIC");
+    g_dynamic_boot_trace = boot_trace_option && *boot_trace_option == '1';
 
     g_rel24_targets.insert(image.rel24_targets.begin(), image.rel24_targets.end());
 
@@ -1189,7 +1198,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
         if (decoded_at(address) && get_or_build_block(address)) ++warmed;
     }
 
-    g_enabled = true;
+    g_enabled.store(true, std::memory_order_release);
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - started)
                           .count();
@@ -1204,8 +1213,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
 }
 
 bool enabled() {
-    std::lock_guard lock(g_mutex);
-    return g_enabled;
+    return g_enabled.load(std::memory_order_acquire);
 }
 
 void initialize_data_imports() {
@@ -1226,7 +1234,7 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
          bool suppress_presentation_hook) {
     uint32_t pc = entry;
     ++t_run_calls;
-    if (t_run_calls <= 32) {
+    if (g_dynamic_boot_trace && t_run_calls <= 32) {
         trace_dynamic_state("run-enter", pc, stop, ctx);
     }
     while (pc != stop) {
@@ -1245,7 +1253,7 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
         if (pc >= g_import_min && pc <= g_import_max) {
             if (auto it = g_imports.find(pc); it != g_imports.end() && !it->second.is_data) {
                 ++t_import_calls;
-                if (t_import_calls <= 64) {
+                if (g_dynamic_boot_trace && t_import_calls <= 64) {
                     char marker[256]{};
                     std::snprintf(marker, sizeof(marker),
                                   "dynamic import #%llu pc=0x%08X %s:%s lr=0x%08X",
@@ -1265,7 +1273,7 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 
         if (PPCFunc* host = find_registered_host_function(pc)) {
             ++t_host_calls;
-            if (t_host_calls <= 32) {
+            if (g_dynamic_boot_trace && t_host_calls <= 32) {
                 char marker[224]{};
                 const char* name = host_function_name(pc);
                 std::snprintf(marker, sizeof(marker),
@@ -1287,23 +1295,25 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
         ++t_blocks_executed;
         t_instructions_executed += block->instructions.size();
 
-        // Boot diagnostics must be useful even when the title stalls almost
-        // immediately. Record the first blocks verbosely, then sample often
-        // enough to capture a stuck/slow PC without paying a clock-query cost
-        // on every basic block.
-        if (t_blocks_executed <= 96) {
-            char marker[224]{};
-            std::snprintf(marker, sizeof(marker),
-                          "dynamic block #%llu pc=0x%08X size=%zu lr=0x%08X sp=0x%08X",
-                          static_cast<unsigned long long>(t_blocks_executed), pc,
-                          block->instructions.size(), ctx.lr, ctx.r[1]);
-            diagnostic_trace(marker);
-        }
-        if (t_blocks_executed == 1 || (t_blocks_executed & 0xFFFu) == 0) {
-            const auto now = std::chrono::steady_clock::now();
-            if (t_blocks_executed == 1 || now - t_last_progress >= std::chrono::seconds(1)) {
-                trace_dynamic_state("progress", pc, stop, ctx);
-                t_last_progress = now;
+        if (g_dynamic_boot_trace) {
+            // Opt-in diagnostic mode for boot investigations. Normal Player
+            // builds keep this disabled so guest threads never synchronously
+            // write thousands of trace records while the game is running.
+            if (t_blocks_executed <= 96) {
+                char marker[224]{};
+                std::snprintf(marker, sizeof(marker),
+                              "dynamic block #%llu pc=0x%08X size=%zu lr=0x%08X sp=0x%08X",
+                              static_cast<unsigned long long>(t_blocks_executed), pc,
+                              block->instructions.size(), ctx.lr, ctx.r[1]);
+                diagnostic_trace(marker);
+            }
+            if (t_blocks_executed == 1 || (t_blocks_executed & 0x3FFFu) == 0) {
+                const auto now = std::chrono::steady_clock::now();
+                if (t_blocks_executed == 1 ||
+                    now - t_last_progress >= std::chrono::seconds(2)) {
+                    trace_dynamic_state("progress", pc, stop, ctx);
+                    t_last_progress = now;
+                }
             }
         }
 
@@ -1316,7 +1326,7 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
             pc = execute_block_cpp(&ctx, base, block);
         }
     }
-    if (t_run_calls <= 32) {
+    if (g_dynamic_boot_trace && t_run_calls <= 32) {
         trace_dynamic_state("run-exit", pc, stop, ctx);
     }
 }
@@ -1359,7 +1369,7 @@ void initialize_test_program(uint32_t base_address,
     }
     g_code.push_back(std::move(section));
     g_hot_block_epoch.fetch_add(1, std::memory_order_relaxed);
-    g_enabled = true;
+    g_enabled.store(true, std::memory_order_release);
 }
 
 void print_recent_trace() {
