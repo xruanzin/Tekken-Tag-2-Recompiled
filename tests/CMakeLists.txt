@@ -140,3 +140,36 @@ else()
 endif()
 ttt2_warnings(dynamic_semantics_test)
 add_test(NAME dynamic_semantics_test COMMAND dynamic_semantics_test)
+
+# Block-level dynamic executor vs generated AOT control-flow programs. Unlike
+# dynamic_semantics_test, this enters dynamic::execute(), so Windows CI also
+# validates the tier-1 x64 JIT, basic-block chaining, branches and memory state.
+add_executable(cafe-dyncfgen oracle/cfgen_main.cpp)
+target_link_libraries(cafe-dyncfgen PRIVATE cafe_recomp)
+target_compile_features(cafe-dyncfgen PRIVATE cxx_std_20)
+
+set(dynamic_control_flow_cases "${CMAKE_CURRENT_BINARY_DIR}/dynamic_control_flow_cases.cpp")
+add_custom_command(OUTPUT "${dynamic_control_flow_cases}"
+    COMMAND cafe-dyncfgen "${dynamic_control_flow_cases}"
+    DEPENDS cafe-dyncfgen
+    COMMENT "Assembling game-independent dynamic control-flow cases"
+    VERBATIM)
+
+add_executable(dynamic_control_flow_test
+    dynamic_control_flow_test.cpp
+    "${dynamic_control_flow_cases}"
+    ${CMAKE_SOURCE_DIR}/runtime/src/dynamic.cpp)
+target_include_directories(dynamic_control_flow_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime/include
+    ${CMAKE_SOURCE_DIR}/runtime/src
+    ${CMAKE_SOURCE_DIR}/recomp/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/oracle)
+target_link_libraries(dynamic_control_flow_test PRIVATE cafe_recomp)
+target_compile_features(dynamic_control_flow_test PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(dynamic_control_flow_test PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(dynamic_control_flow_test PRIVATE -O2 -march=x86-64-v3)
+endif()
+ttt2_warnings(dynamic_control_flow_test)
+add_test(NAME dynamic_control_flow_test COMMAND dynamic_control_flow_test)
