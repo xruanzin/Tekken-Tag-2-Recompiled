@@ -15,6 +15,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -131,10 +132,12 @@ bool g_cache_exit_registered = false;
 constexpr size_t kBlockCacheFlushBatch = 8192;
 
 #ifdef _WIN32
-constexpr size_t kJitArenaSize = 8u << 20;
+constexpr size_t kJitArenaSize = 64u << 20;
 uint8_t* g_jit_arena = nullptr;
 size_t g_jit_offset = 0;
 bool g_jit_enabled = true;
+size_t g_jit_blocks = 0;
+size_t g_jit_direct_instructions = 0;
 #endif
 
 struct CodeSection {
@@ -247,19 +250,18 @@ void reset_jit_arena() {
         g_jit_arena = nullptr;
     }
     g_jit_offset = 0;
-    const char* option = std::getenv("TTT2_DYNAMIC_TRAMPOLINES");
-    g_jit_enabled = option && *option == '1';
+    g_jit_blocks = 0;
+    g_jit_direct_instructions = 0;
+    const char* option = std::getenv("TTT2_DYNAMIC_JIT");
+    g_jit_enabled = option == nullptr || *option == '\0' || *option != '0';
     if (!g_jit_enabled) return;
 
-    // These are dispatch trampolines, not translated PPC code. They are kept
-    // only as an opt-in comparison path; direct calls to execute_block_cpp are
-    // faster on the Windows Player because they avoid an extra indirect jump.
     g_jit_arena = static_cast<uint8_t*>(
         VirtualAlloc(nullptr, kJitArenaSize, MEM_RESERVE | MEM_COMMIT,
                      PAGE_EXECUTE_READWRITE));
     if (!g_jit_arena) {
         g_jit_enabled = false;
-        std::fprintf(stderr, "ttt2: dynamic host: x64 baseline JIT arena unavailable; using C++ blocks\n");
+        std::fprintf(stderr, "ttt2: dynamic host: x64 tier-1 JIT arena unavailable; using C++ blocks\n");
     }
 }
 #endif
