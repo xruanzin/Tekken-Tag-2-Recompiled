@@ -173,9 +173,16 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_FAST_PIPELINES")) {
         fast_pipelines_ = *value != '\0' && *value != '0';
     }
+    skip_pending_compiles_ = async_shaders_ || async_pipelines_;
+    if (const char* value = std::getenv("TTT2_SKIP_PENDING_COMPILES")) {
+        skip_pending_compiles_ = *value != '\0' && *value != '0';
+    }
     cafe::diagnostic_trace(fast_pipelines_
                                ? "GPU pipeline mode=fast-create"
                                : "GPU pipeline mode=fully-optimized");
+    cafe::diagnostic_trace(skip_pending_compiles_
+                               ? "GPU pending shader/pipeline mode=nonblocking"
+                               : "GPU pending shader/pipeline mode=blocking");
     if (const char* value = std::getenv("TTT2_NATIVE_EFFECT_BUFFERS")) {
         native_effect_buffers_ = *value != '\0' && *value != '0';
     }
