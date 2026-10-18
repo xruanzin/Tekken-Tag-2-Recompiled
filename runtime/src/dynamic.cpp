@@ -99,7 +99,8 @@ using BlockFn = uint32_t (*)(PPCContext*, uint8_t*);
 
 struct Block {
     uint32_t start{};
-    std::vector<const Decoded*> instructions;
+    const Decoded* first{};
+    uint16_t count{};
     BlockFn native{};
 };
 
@@ -1051,16 +1052,17 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
 __attribute__((always_inline)) inline
 #endif
 uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
-    const size_t count = block->instructions.size();
-    if (count == 0) return block->start;
+    const size_t count = block->count;
+    if (count == 0 || block->first == nullptr) return block->start;
 
-    const Decoded* tail = block->instructions.back();
+    const Decoded* first = block->first;
+    const Decoded* tail = first + (count - 1);
 
     // Diagnostics are opt-in. Keep all trace bookkeeping out of the normal
     // gameplay path: the dynamic runtime executes billions of basic blocks.
     if (g_full_instruction_trace) {
         for (size_t i = 0; i + 1 < count; ++i) {
-            const Decoded* ins = block->instructions[i];
+            const Decoded* ins = first + i;
             remember_instruction(ins->address, ins->word);
             (void)execute_one(*ctx, base, *ins);
         }
@@ -1071,11 +1073,10 @@ uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
         remember_instruction(tail->address, tail->word);
     }
 
-    // get_or_build_block() guarantees that control-flow instructions only
-    // occur at the tail. Avoid the per-instruction next-PC comparison and
-    // ends_block() switch in the hot interpreter loop.
+    // Blocks reference one contiguous decoded span. Avoid a vector lookup and
+    // an extra pointer indirection for every guest instruction.
     for (size_t i = 0; i + 1 < count; ++i) {
-        (void)execute_one(*ctx, base, *block->instructions[i]);
+        (void)execute_one(*ctx, base, first[i]);
     }
     return execute_one(*ctx, base, *tail);
 }
@@ -1129,18 +1130,33 @@ Block* get_or_build_block_slow(uint32_t start) {
 
     auto block = std::make_unique<Block>();
     block->start = start;
-    uint32_t pc = start;
-    for (size_t count = 0; count < kMaxBlockInstructions; ++count) {
+
+    // Locate the containing code section once. Decoded instructions inside a
+    // section are contiguous, so a block only needs first+count.
+    const CodeSection* owner = nullptr;
+    size_t first_index = 0;
+    for (const auto& section : g_code) {
+        if (start >= section.begin && start < section.end &&
+            ((start - section.begin) & 3u) == 0) {
+            owner = &section;
+            first_index = (start - section.begin) / 4;
+            break;
+        }
+    }
+    if (owner == nullptr || first_index >= owner->code.size()) return nullptr;
+
+    block->first = owner->code.data() + first_index;
+    const size_t available = owner->code.size() - first_index;
+    const size_t limit = std::min(kMaxBlockInstructions, available);
+    for (size_t count = 0; count < limit; ++count) {
+        const Decoded* ins = block->first + count;
         // Make the native presentation hook an explicit block boundary so
         // normal execution always passes through run()'s hook interception.
-        if (pc == kPresentationHook && pc != start) break;
-        const Decoded* ins = decoded_at(pc);
-        if (!ins) break;
-        block->instructions.push_back(ins);
+        if (ins->address == kPresentationHook && count != 0) break;
+        ++block->count;
         if (ends_block(ins->op)) break;
-        pc += 4;
     }
-    if (block->instructions.empty()) return nullptr;
+    if (block->count == 0) return nullptr;
 
     std::lock_guard lock(g_block_mutex);
     if (const auto found = g_blocks.find(start); found != g_blocks.end()) {
@@ -1245,7 +1261,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     refresh_hot_block_cache_epoch();
     size_t warmed = 0;
     for (const uint32_t address : warm_blocks) {
-        if (decoded_at(address) && get_or_build_block(address)) ++warmed;
+        if (get_or_build_block(address)) ++warmed;
     }
 
     g_enabled.store(true, std::memory_order_release);
@@ -1351,7 +1367,7 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 
         if (g_dynamic_boot_trace) {
             ++t_blocks_executed;
-            t_instructions_executed += block->instructions.size();
+            t_instructions_executed += block->count;
             // Opt-in diagnostic mode for boot investigations. Normal Player
             // builds keep this disabled so guest threads never synchronously
             // write thousands of trace records while the game is running.
@@ -1360,7 +1376,7 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
                 std::snprintf(marker, sizeof(marker),
                               "dynamic block #%llu pc=0x%08X size=%zu lr=0x%08X sp=0x%08X",
                               static_cast<unsigned long long>(t_blocks_executed), pc,
-                              block->instructions.size(), ctx.lr, ctx.r[1]);
+                              static_cast<size_t>(block->count), ctx.lr, ctx.r[1]);
                 diagnostic_trace(marker);
             }
             if (t_blocks_executed == 1 || (t_blocks_executed & 0x3FFFu) == 0) {
