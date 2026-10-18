@@ -86,6 +86,12 @@ struct Decoded {
     uint32_t address{};
     uint32_t word{};
     Op op{Op::invalid};
+    uint8_t d{};
+    uint8_t ra{};
+    uint8_t rb{};
+    uint8_t rc{};
+    int16_t simm{};
+    uint16_t uimm{};
     uint32_t direct_target{};
 };
 
@@ -331,7 +337,16 @@ Decoded decode_instruction(uint32_t address, uint32_t word) {
         target = relocated != g_rel24_targets.end() ? relocated->second
                                                     : ppc::branch_target(word, address);
     }
-    return {address, word, op, target};
+    return {address,
+            word,
+            op,
+            static_cast<uint8_t>(ppc::rd(word)),
+            static_cast<uint8_t>(ppc::ra(word)),
+            static_cast<uint8_t>(ppc::rb(word)),
+            static_cast<uint8_t>(ppc::frc(word)),
+            static_cast<int16_t>(ppc::simm(word)),
+            static_cast<uint16_t>(ppc::uimm(word)),
+            target};
 }
 
 const Decoded* decoded_at(uint32_t address) {
@@ -450,12 +465,12 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t a = ins.address;
     const uint32_t w = ins.word;
     const Op op = ins.op;
-    const uint32_t d = ppc::rd(w);
-    const uint32_t ra = ppc::ra(w);
-    const uint32_t rb = ppc::rb(w);
-    const uint32_t rc = ppc::frc(w);
-    const int32_t simm = ppc::simm(w);
-    const uint32_t uimm = ppc::uimm(w);
+    const uint32_t d = ins.d;
+    const uint32_t ra = ins.ra;
+    const uint32_t rb = ins.rb;
+    const uint32_t rc = ins.rc;
+    const int32_t simm = ins.simm;
+    const uint32_t uimm = ins.uimm;
     uint32_t next = a + 4;
 
     if (ppc::has_record_form(op) && ppc::rc(w) && op >= Op::fadd) {
