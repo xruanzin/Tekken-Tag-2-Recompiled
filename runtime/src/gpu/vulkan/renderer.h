@@ -408,6 +408,10 @@ private:
     const Pipeline* bound_pipeline_ = nullptr;
 
     std::vector<std::unique_ptr<Target>> targets_;
+    // Hot lookup used by render-to-texture paths. The title accumulates more
+    // than one hundred targets; scanning the whole vector for every texture
+    // lookup becomes expensive in fight scenes.
+    std::unordered_map<uint32_t, std::vector<Target*>> targets_by_address_;
     std::unordered_map<uint64_t, std::unique_ptr<Texture>> textures_;
     // Textures and shader programs by the 64 KiB pages of guest memory they
     // use, for the CPU-write and cache-invalidation notices (hundreds a frame).
@@ -462,6 +466,10 @@ private:
     bool async_pipelines_ = true;
     bool fast_pipelines_ = false;
     bool skip_pending_compiles_ = true;
+    // Hybrid compile policy: wait only a small amount per rendered frame for
+    // required shader/pipeline work, then skip if it is still pending. This
+    // avoids both 100+ ms stalls and hundreds of missing draws.
+    double compile_wait_budget_ms_ = 4.0;
     bool pipeline_pending_ = false;
     bool pipeline_compile_stop_ = false;
     std::mutex pipeline_compile_mutex_;
