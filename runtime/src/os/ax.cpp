@@ -96,6 +96,9 @@ uint32_t g_aux_callbacks[3][2]{};
 uint32_t g_final_mix_callbacks[2]{};
 uint16_t g_master_volume = 0x8000;
 Thread* g_ax_thread = nullptr;
+uint64_t g_ax_slow_frames = 0;
+double g_ax_max_callback_ms = 0.0;
+std::chrono::steady_clock::time_point g_ax_last_perf_trace{};
 
 // Main-bus output of the frame being mixed, in 16-bit sample units.
 float g_tv_bus[kTvChannels][kOutputSamples];
@@ -314,8 +317,18 @@ void wait_for_frame(std::chrono::steady_clock::time_point& next) {
     }
     next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
     std::this_thread::sleep_until(next);
-    // Running far behind (debugger, heavy load): skip, don't burst.
-    if (std::chrono::steady_clock::now() - next > kFramePeriod * 10) next = std::chrono::steady_clock::now();
+    // If a render/guest stall ran far past the 3 ms deadline, do not discard
+    // the whole audio timeline. When the device queue is genuinely low, allow
+    // at most two immediate catch-up frames; otherwise resync without a burst.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - next > kFramePeriod * 10) {
+        if (host::audio_device_active() &&
+            host::queued_audio_frames() < host::kAudioQueueTarget / 2) {
+            next = now - kFramePeriod * 2;
+        } else {
+            next = now;
+        }
+    }
 }
 
 void ax_main(void*) {
@@ -340,6 +353,8 @@ void ax_main(void*) {
             final_mix[0] = g_final_mix_callbacks[0];
             final_mix[1] = g_final_mix_callbacks[1];
         }
+        const auto callback_begin = std::chrono::steady_clock::now();
+
         // Frame callbacks run as AX's interrupt handler would.
         KernelLock lock(kernel_mutex());
         acquire_interrupt_lock(lock, t);
@@ -353,6 +368,28 @@ void ax_main(void*) {
         // Final mix callbacks run on AX's own thread, outside the interrupt.
         run_final_mix(t, 0, final_mix[0], output);
         run_final_mix(t, 1, final_mix[1], nullptr);
+
+        const auto callback_end = std::chrono::steady_clock::now();
+        const double callback_ms = std::chrono::duration<double, std::milli>(
+            callback_end - callback_begin).count();
+        g_ax_max_callback_ms = std::max(g_ax_max_callback_ms, callback_ms);
+        if (callback_ms > 3.0) ++g_ax_slow_frames;
+
+        const auto perf_now = callback_end;
+        if (g_ax_last_perf_trace.time_since_epoch().count() == 0 ||
+            perf_now - g_ax_last_perf_trace >= std::chrono::seconds(10)) {
+            char info[192]{};
+            std::snprintf(info, sizeof(info),
+                          "AX guest_callback_max_ms=%.2f slow_frames=%llu queue=%u",
+                          g_ax_max_callback_ms,
+                          static_cast<unsigned long long>(g_ax_slow_frames),
+                          host::queued_audio_frames());
+            cafe::diagnostic_trace(info);
+            g_ax_max_callback_ms = 0.0;
+            g_ax_slow_frames = 0;
+            g_ax_last_perf_trace = perf_now;
+        }
+
         host::queue_audio(output, kOutputSamples);
     }
 }
