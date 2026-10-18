@@ -168,9 +168,14 @@ struct TextureCacheHeader {
 };
 
 bool texture_cache_enabled() {
+    // The asynchronous detile/cache path is experimental. It can observe guest
+    // texture memory while another guest thread is updating it and then make
+    // that inconsistent snapshot persistent. Keep the deterministic original
+    // upload path as the player default; developers can opt back in with
+    // TTT2_TEXTURE_CACHE=1 while validating the fast path.
     static const bool enabled = [] {
         const char* value = std::getenv("TTT2_TEXTURE_CACHE");
-        return value == nullptr || *value == '\0' || *value != '0';
+        return value && *value == '1';
     }();
     return enabled;
 }
@@ -796,6 +801,57 @@ void Renderer::load_texture(Texture& t) {
         return;
     }
     const gpu::PlaneFilter& plane_filter = gpu::plane_filter();
+
+    // Correctness-first path: match the original renderer. Detile each mip
+    // from guest memory on the render thread and upload it immediately. This
+    // guarantees that the hash, detile and Vulkan upload describe one coherent
+    // guest-memory snapshot instead of a mixture prepared by background jobs.
+    if (!texture_cache_enabled()) {
+        for (uint32_t level = 0; level < s.mip_levels; ++level) {
+            const uint32_t width = std::max(1u, r.width >> level);
+            const uint32_t height = std::max(1u, r.height >> level);
+            const uint32_t ew = (width + block - 1) / block;
+            const uint32_t eh = (height + block - 1) / block;
+            const uint32_t slices = r.dim == gx2::kDim3D ? std::max(1u, r.depth >> level) : r.depth;
+            const VkDeviceSize bytes = VkDeviceSize{ew} * eh * slices * f.bytes;
+            VkDeviceSize offset = 0;
+            uint8_t* staging = upload(bytes, 16, offset);
+
+            if (level == 0 && hw == fmt::k8 && slices == 1 && plane_filter) {
+                // Staging memory is intentionally write-combined and slow to
+                // read, so filtering uses a small CPU-side temporary exactly
+                // as the original path did.
+                std::vector<uint8_t> plane(static_cast<size_t>(bytes));
+                detile(tiled_level(level), ew, eh, 0, slices, plane.data());
+                plane_filter(uint32_t{s.image}, ew, eh, plane.data());
+                std::memcpy(staging, plane.data(), plane.size());
+            } else {
+                detile(tiled_level(level), ew, eh, 0, slices, staging);
+            }
+
+            if (hw == fmt::k8_24) {
+                auto* v = reinterpret_cast<uint32_t*>(staging);
+                for (VkDeviceSize i = 0; i < bytes / 4; ++i) {
+                    const float depth = static_cast<float>(v[i] & 0xFFFFFF) / 16777215.0f;
+                    std::memcpy(&v[i], &depth, 4);
+                }
+            }
+
+            VkBufferImageCopy region{};
+            region.bufferOffset = offset;
+            region.bufferRowLength = ew * block;
+            region.bufferImageHeight = eh * block;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0,
+                                       r.dim == gx2::kDim3D ? 1 : slices};
+            region.imageExtent = {width, height, r.dim == gx2::kDim3D ? slices : 1};
+            vkCmdCopyBufferToImage(cmd(), ring_.buffer(), t.image.image,
+                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        }
+        barrier();
+        profile_mark("texture upload", uint32_t{s.image}, r.width, r.height);
+        report_texture_prepare("direct");
+        return;
+    }
 
     struct PreparedLevel {
         uint32_t width = 0, height = 0, ew = 0, eh = 0, slices = 0;
