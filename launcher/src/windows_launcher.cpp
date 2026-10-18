@@ -698,16 +698,29 @@ void set_env(const wchar_t* name, const std::wstring& value) {
     SetEnvironmentVariableW(name, value.empty() ? nullptr : value.c_str());
 }
 
+fs::path persistent_cache_root() {
+    wchar_t buffer[32768]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (length != 0 && length < std::size(buffer)) {
+        return fs::path(buffer) / L"TTT2-Recompiled" / L"cache";
+    }
+    return g_root / L"user" / L"cache";
+}
+
 void apply_environment() {
     const fs::path user = g_root / L"user";
-    const fs::path out = g_root / L"out";
+    const fs::path cache = persistent_cache_root();
     std::error_code user_ec;
     fs::create_directories(user, user_ec);
     user_ec.clear();
-    fs::create_directories(out, user_ec);
+    fs::create_directories(cache, user_ec);
+    user_ec.clear();
+    fs::create_directories(cache / L"code-cache", user_ec);
     set_env(L"TTT2_USER_DIR", user.wstring());
     set_env(L"TTT2_SAVE_DIR", (user / L"save").wstring());
-    set_env(L"TTT2_CODE_CACHE_DIR", (out / L"code-cache").wstring());
+    set_env(L"TTT2_CACHE_DIR", cache.wstring());
+    set_env(L"TTT2_CODE_CACHE_DIR", (cache / L"code-cache").wstring());
+    launcher_trace(L"persistent cache: " + cache.wstring());
 
     // Internal rendering.
     if (g_cfg.render_scale == 0) set_env(L"TTT2_SCALE", L"");
