@@ -1117,6 +1117,20 @@ struct X64Emitter {
     void store_eax_ctx(uint32_t off) { b(0x41); b(0x89); b(0x83); d(off); }
     void load_r9d_ctx(uint32_t off) { b(0x45); b(0x8B); b(0x8B); d(off); }
     void store_r9d_ctx(uint32_t off) { b(0x45); b(0x89); b(0x8B); d(off); }
+    void load_r10d_ctx(uint32_t off) { b(0x45); b(0x8B); b(0x93); d(off); }
+    void mov_eax_r10d() { b(0x44); b(0x89); b(0xD0); }
+    void loadzx_eax_ctx8(uint32_t off) { b(0x41); b(0x0F); b(0xB6); b(0x83); d(off); }
+    uint8_t* jcc32(uint8_t cc) {
+        b(0x0F); b(cc);
+        uint8_t* displacement = p;
+        d(0);
+        return displacement;
+    }
+    void patch_rel32(uint8_t* displacement, uint8_t* target) {
+        const intptr_t delta = target - (displacement + 4);
+        const int32_t rel = static_cast<int32_t>(delta);
+        std::memcpy(displacement, &rel, sizeof(rel));
+    }
 
     void load_eax_r(uint32_t r) { load_eax_ctx(r_off(r)); }
     void store_eax_r(uint32_t r) { store_eax_ctx(r_off(r)); }
@@ -1402,36 +1416,59 @@ struct X64Emitter {
         const uint32_t lr_off = static_cast<uint32_t>(offsetof(PPCContext, lr));
         const uint32_t ctr_off = static_cast<uint32_t>(offsetof(PPCContext, ctr));
         const bool link = ppc::lk(ins.word);
-        switch (ins.op) {
-        case Op::b:
+        if (ins.op == Op::b) {
             if (link) store_imm_ctx(lr_off, ins.address + 4);
             mov_eax_imm(ins.direct_target);
             ret();
             return true;
-        case Op::bc:
-            // BO=0b1x1xx: neither CTR nor CR participates, so this is an
-            // unconditional branch encoded with bc.
-            if ((ins.d & 0x14) != 0x14) return false;
-            if (link) store_imm_ctx(lr_off, ins.address + 4);
-            mov_eax_imm(ins.direct_target);
-            ret();
-            return true;
-        case Op::bclr:
-            if ((ins.d & 0x14) != 0x14) return false;
-            // The target is the old LR when LK is set.
-            load_eax_ctx(lr_off);
-            if (link) store_imm_ctx(lr_off, ins.address + 4);
-            ret();
-            return true;
-        case Op::bcctr:
-            if ((ins.d & 0x14) != 0x14) return false;
-            load_eax_ctx(ctr_off);
-            if (link) store_imm_ctx(lr_off, ins.address + 4);
-            ret();
-            return true;
-        default:
-            return false;
         }
+        if (ins.op != Op::bc && ins.op != Op::bclr && ins.op != Op::bcctr) return false;
+
+        const uint32_t bo = ins.d;
+        const uint32_t bi = ins.ra;
+        if (ins.op == Op::bcctr && !(bo & 4)) return false; // architecturally illegal
+
+        // bclr with LK branches to the old LR, so preserve it before updating
+        // LR. Conditional bc/bcctr have immediate/CTR targets and need no save.
+        if (ins.op == Op::bclr) load_r10d_ctx(lr_off);
+        if (link) store_imm_ctx(lr_off, ins.address + 4);
+
+        uint8_t* false_jumps[2]{};
+        uint32_t false_count = 0;
+
+        if (!(bo & 4)) {
+            load_eax_ctx(ctr_off);
+            b(0x83); b(0xE8); b(0x01); // sub eax,1
+            store_eax_ctx(ctr_off);
+            b(0x85); b(0xC0);          // test eax,eax
+            // BO[3] selects CTR==0 vs CTR!=0.
+            false_jumps[false_count++] = jcc32((bo & 2) ? 0x85 : 0x84); // jne / je
+        }
+
+        if (!(bo & 0x10)) {
+            const uint32_t bit_off = cr_off((bi >> 2) & 7u, bi & 3u);
+            loadzx_eax_ctx8(bit_off);
+            b(0x85); b(0xC0); // test eax,eax
+            // BO[1] selects CR[BI]==1 vs ==0.
+            false_jumps[false_count++] = jcc32((bo & 8) ? 0x84 : 0x85); // je / jne
+        }
+
+        if (ins.op == Op::bc) {
+            mov_eax_imm(ins.direct_target);
+        } else if (ins.op == Op::bclr) {
+            mov_eax_r10d();
+        } else {
+            load_eax_ctx(ctr_off);
+        }
+        ret();
+
+        if (false_count != 0) {
+            uint8_t* not_taken = p;
+            mov_eax_imm(ins.address + 4);
+            ret();
+            for (uint32_t i = 0; i < false_count; ++i) patch_rel32(false_jumps[i], not_taken);
+        }
+        return true;
     }
 
     void suffix(Block* block, uint32_t start) {
