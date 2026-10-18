@@ -16,10 +16,11 @@ namespace cafe::host {
 constexpr uint32_t kAudioRate = 48000;
 // Output kept queued ahead of the device: more than one device request
 // (PipeWire asks for up to 2048 frames at a time).
-// Keep enough real-time headroom for occasional dynamic-PPC stalls. 4096
-// frames is about 85 ms at 48 kHz: still responsive, but far less likely to
-// underrun when a fight scene briefly saturates the CPU.
-constexpr uint32_t kAudioQueueTarget = 4096;
+// Keep enough real-time headroom for occasional dynamic-PPC/render stalls.
+// 6144 frames is about 128 ms at 48 kHz: large enough to cover the transient
+// stalls observed during stage/texture creation without making the device
+// queue unbounded.
+constexpr uint32_t kAudioQueueTarget = 6144;
 
 // Opens the playback device. Main thread, before the title starts.
 void open_audio();
