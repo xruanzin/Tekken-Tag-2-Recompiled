@@ -162,6 +162,19 @@ void set_thread_high_priority() {
 #endif
 }
 
+void set_audio_thread_priority() {
+#ifdef _WIN32
+    // The AX mixer has a 3 ms deadline. Give it stronger scheduling than
+    // ordinary guest/render workers and hint it toward the last logical CPU,
+    // away from the Cafe core hints (0,2,4 on common SMT systems).
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const DWORD logical = std::max<DWORD>(1, info.dwNumberOfProcessors);
+    SetThreadIdealProcessor(GetCurrentThread(), logical - 1);
+#endif
+}
+
 void set_thread_normal_priority() {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
