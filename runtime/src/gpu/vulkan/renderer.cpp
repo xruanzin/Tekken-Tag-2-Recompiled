@@ -147,7 +147,10 @@ Renderer::Renderer() {
     }
     if (async_shaders_) {
         const uint32_t logical = std::max(1u, std::thread::hardware_concurrency());
-        const uint32_t workers = logical >= 6 ? 2u : 1u;
+        // Three workers are a better balance on 6C/12T CPUs: shader misses
+        // stop blocking frames, so the goal is to make missing effects become
+        // ready quickly without consuming half of the host CPU.
+        const uint32_t workers = logical >= 12 ? 3u : (logical >= 6 ? 2u : 1u);
         std::fprintf(stderr, "ttt2: GPU: asynchronous shader compilation enabled (%u workers)\n", workers);
         char shader_workers[128]{};
         std::snprintf(shader_workers, sizeof(shader_workers),
