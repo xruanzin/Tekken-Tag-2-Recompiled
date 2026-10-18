@@ -473,7 +473,7 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t uimm = ins.uimm;
     uint32_t next = a + 4;
 
-    if (ppc::has_record_form(op) && ppc::rc(w) && op >= Op::fadd) {
+    if ((w & 1u) != 0 && op >= Op::fadd && ppc::has_record_form(op)) {
         cafe_ppc_illegal(ctx, a, w, "floating-point record form");
     }
 
