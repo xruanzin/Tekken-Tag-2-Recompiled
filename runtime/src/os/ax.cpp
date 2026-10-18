@@ -29,6 +29,7 @@
 #include "cafe/export.h"
 #include "cafe/sysmem.h"
 #include "host/audio.h"
+#include "host/platform.h"
 #include "host/thread.h"
 
 #include <algorithm>
@@ -293,7 +294,13 @@ void wait_for_frame(std::chrono::steady_clock::time_point& next) {
         const uint32_t queued = host::queued_audio_frames();
         level += (queued - level) * 0.01;
         const double error = (level - host::kAudioQueueTarget) / host::kAudioQueueTarget;
-        period *= 1.0 + std::clamp(error * 0.02, -0.005, 0.005);
+        // Normal clock-drift correction stays tiny, but after a CPU stall the
+        // queue may be far below target. Recover faster for a short time so we
+        // refill with real mixed audio instead of a long stretch of silence.
+        const double correction = std::abs(error) > 0.25
+                                      ? std::clamp(error * 0.20, -0.20, 0.08)
+                                      : std::clamp(error * 0.02, -0.005, 0.005);
+        period *= 1.0 + correction;
         if (g_trace) {
             static uint32_t lowest = UINT32_MAX, frames = 0;
             lowest = std::min(lowest, queued);
@@ -313,6 +320,11 @@ void wait_for_frame(std::chrono::steady_clock::time_point& next) {
 
 void ax_main(void*) {
     Thread* t = g_ax_thread;
+    // AX must produce a 3 ms frame on schedule. If it competes at NORMAL
+    // priority with many interpreted guest threads, the playback queue can
+    // drain even though the audio mixer itself is inexpensive.
+    host::set_thread_name("cafe-audio");
+    host::set_thread_high_priority();
     bind_current_thread(t);
     auto next = std::chrono::steady_clock::now();
     float output[2 * kOutputSamples];
