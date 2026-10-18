@@ -85,6 +85,7 @@ struct Decoded {
     uint32_t address{};
     uint32_t word{};
     Op op{Op::invalid};
+    uint32_t direct_target{};
 };
 
 using BlockFn = uint32_t (*)(PPCContext*, uint8_t*);
@@ -321,10 +322,15 @@ bool branch_condition(PPCContext& ctx, uint32_t bo, uint32_t bi) {
     return take;
 }
 
-uint32_t direct_branch_target(uint32_t address, uint32_t word) {
-    const auto relocated = g_rel24_targets.find(address);
-    return relocated != g_rel24_targets.end() ? relocated->second
-                                              : ppc::branch_target(word, address);
+Decoded decode_instruction(uint32_t address, uint32_t word) {
+    const Op op = ppc::decode(word);
+    uint32_t target = 0;
+    if (op == Op::b || op == Op::bc) {
+        const auto relocated = g_rel24_targets.find(address);
+        target = relocated != g_rel24_targets.end() ? relocated->second
+                                                    : ppc::branch_target(word, address);
+    }
+    return {address, word, op, target};
 }
 
 const Decoded* decoded_at(uint32_t address) {
@@ -668,11 +674,11 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
 
     case Op::b:
         if (ppc::lk(w)) ctx.lr = a + 4;
-        next = direct_branch_target(a, w);
+        next = ins.direct_target;
         break;
     case Op::bc: {
         if (ppc::lk(w)) ctx.lr = a + 4;
-        if (branch_condition(ctx, d, ra)) next = direct_branch_target(a, w);
+        if (branch_condition(ctx, d, ra)) next = ins.direct_target;
         break;
     }
     case Op::bclr: {
@@ -1174,7 +1180,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
         for (size_t i = 0; i < words; ++i) {
             const uint32_t address = decoded.begin + static_cast<uint32_t>(i * 4);
             const uint32_t word = rpx::read_be32(section.data.data() + i * 4);
-            decoded.code.push_back({address, word, ppc::decode(word)});
+            decoded.code.push_back(decode_instruction(address, word));
         }
         instruction_count += words;
         g_code.push_back(std::move(decoded));
@@ -1342,7 +1348,7 @@ void execute(PPCContext& ctx, uint8_t* base, uint32_t entry) {
 
 uint32_t execute_test_instruction(PPCContext& ctx, uint8_t* base,
                                   uint32_t address, uint32_t word) {
-    const Decoded instruction{address, word, ppc::decode(word)};
+    const Decoded instruction = decode_instruction(address, word);
     return execute_one(ctx, base, instruction);
 }
 
@@ -1372,7 +1378,7 @@ void initialize_test_program(uint32_t base_address,
     section.code.reserve(words.size());
     for (size_t i = 0; i < words.size(); ++i) {
         const uint32_t address = base_address + static_cast<uint32_t>(i * 4);
-        section.code.push_back({address, words[i], ppc::decode(words[i])});
+        section.code.push_back(decode_instruction(address, words[i]));
     }
     g_code.push_back(std::move(section));
     g_hot_block_epoch.fetch_add(1, std::memory_order_relaxed);
