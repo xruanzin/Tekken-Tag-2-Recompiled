@@ -1307,11 +1307,58 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
             trace_dynamic_state("run-enter", pc, stop, ctx);
         }
     }
-    while (pc != stop) {
+
+    // Game code for this title lives below the synthetic host-thunk window.
+    // Stay on a tight block-to-block path while PC remains normal guest code;
+    // only return to the slow dispatcher for imports, host thunks, the native
+    // presentation hook or the requested stop address.
+    constexpr uint32_t kFastGuestLimit = layout::kHostThunkBase;
+
+    for (;;) {
+        while (pc != stop && pc < kFastGuestLimit &&
+               (suppress_presentation_hook || pc != kPresentationHook)) {
+            Block* block = get_or_build_block(pc);
+            if (!block) {
+                fatal("dynamic guest execution reached non-code address 0x%08X", pc);
+            }
+
+            if (g_dynamic_boot_trace) {
+                ++t_blocks_executed;
+                t_instructions_executed += block->count;
+                if (t_blocks_executed <= 96) {
+                    char marker[224]{};
+                    std::snprintf(marker, sizeof(marker),
+                                  "dynamic block #%llu pc=0x%08X size=%zu lr=0x%08X sp=0x%08X",
+                                  static_cast<unsigned long long>(t_blocks_executed), pc,
+                                  static_cast<size_t>(block->count), ctx.lr, ctx.r[1]);
+                    diagnostic_trace(marker);
+                }
+                if (t_blocks_executed == 1 || (t_blocks_executed & 0x3FFFu) == 0) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (t_blocks_executed == 1 ||
+                        now - t_last_progress >= std::chrono::seconds(2)) {
+                        trace_dynamic_state("progress", pc, stop, ctx);
+                        t_last_progress = now;
+                    }
+                }
+            }
+
+#ifdef _WIN32
+            if (block->native) {
+                pc = block->native(&ctx, base);
+            } else
+#endif
+            {
+                pc = execute_block_cpp(&ctx, base, block);
+            }
+        }
+
+        if (pc == stop) break;
+
         // The static port replaces this function to observe the system-info
         // object after the original guest body returns. Reproduce the same
         // hook without requiring any generated C++ symbol.
-        if (!suppress_presentation_hook && pc == 0x0864107Cu) {
+        if (!suppress_presentation_hook && pc == kPresentationHook) {
             const uint32_t out = ctx.r[3];
             const uint32_t return_address = ctx.lr;
             run(ctx, base, pc, return_address, true);
@@ -1361,44 +1408,9 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
             continue;
         }
 
-        Block* block = get_or_build_block(pc);
-        if (!block) {
-            fatal("dynamic guest execution reached non-code address 0x%08X", pc);
-        }
-
-        if (g_dynamic_boot_trace) {
-            ++t_blocks_executed;
-            t_instructions_executed += block->count;
-            // Opt-in diagnostic mode for boot investigations. Normal Player
-            // builds keep this disabled so guest threads never synchronously
-            // write thousands of trace records while the game is running.
-            if (t_blocks_executed <= 96) {
-                char marker[224]{};
-                std::snprintf(marker, sizeof(marker),
-                              "dynamic block #%llu pc=0x%08X size=%zu lr=0x%08X sp=0x%08X",
-                              static_cast<unsigned long long>(t_blocks_executed), pc,
-                              static_cast<size_t>(block->count), ctx.lr, ctx.r[1]);
-                diagnostic_trace(marker);
-            }
-            if (t_blocks_executed == 1 || (t_blocks_executed & 0x3FFFu) == 0) {
-                const auto now = std::chrono::steady_clock::now();
-                if (t_blocks_executed == 1 ||
-                    now - t_last_progress >= std::chrono::seconds(2)) {
-                    trace_dynamic_state("progress", pc, stop, ctx);
-                    t_last_progress = now;
-                }
-            }
-        }
-
-#ifdef _WIN32
-        if (block->native) {
-            pc = block->native(&ctx, base);
-        } else
-#endif
-        {
-            pc = execute_block_cpp(&ctx, base, block);
-        }
+        fatal("dynamic guest execution reached unsupported dispatcher address 0x%08X", pc);
     }
+
     if (g_dynamic_boot_trace && t_run_calls <= 32) {
         trace_dynamic_state("run-exit", pc, stop, ctx);
     }
