@@ -69,6 +69,11 @@ fs::path data_directory() {
 }
 
 fs::path cache_directory() {
+    // Cache lifetime is intentionally independent from portable settings and
+    // saves. Release ZIPs are commonly extracted into a fresh directory, so
+    // tying compiled shaders/JIT data to TTT2_USER_DIR forced every version to
+    // rebuild the same caches from zero.
+    if (const char* value = std::getenv("TTT2_CACHE_DIR"); value && *value) return fs::path(value);
     if (const char* value = std::getenv("TTT2_USER_DIR"); value && *value) return fs::path(value);
 #ifdef _WIN32
     return env_or("LOCALAPPDATA", home_directory() / "AppData/Local");
