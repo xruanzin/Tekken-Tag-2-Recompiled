@@ -9,12 +9,10 @@
 #include "cafe/runtime.h"
 #include "gpu/vulkan/png.h"
 #include "wua.h"
+#include "host/file.h"
+#include "host/platform.h"
 
 #include <SDL3/SDL.h>
-
-#include <fcntl.h>
-#include <sys/statvfs.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -42,25 +40,9 @@ struct Failure : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 [[noreturn]] void fail(const std::string& message) { throw Failure(message); }
-[[noreturn]] void fail_errno(const std::string& what) { fail(what + ": " + std::strerror(errno)); }
-
-fs::path home() {
-    const char* h = std::getenv("HOME");
-    return h && *h ? fs::path(h) : fs::path("/");
-}
-
-// $XDG_CONFIG_HOME and $XDG_DATA_HOME (absolute paths only, as the
-// specification says).
-fs::path xdg(const char* variable, const char* fallback) {
-    const char* v = std::getenv(variable);
-    return v && *v == '/' ? fs::path(v) : home() / fallback;
-}
-
-fs::path config_file() { return xdg("XDG_CONFIG_HOME", ".config") / "ttt2" / "installed"; }
-
-// This executable, readable even when its file has been replaced (a
-// rebuild during an install).
-const fs::path kSelf = "/proc/self/exe";
+fs::path home() { return host::home_directory(); }
+fs::path config_file() { return host::config_directory() / "ttt2" / "installed"; }
+fs::path self_path() { return host::executable_path(); }
 
 std::string gigabytes(uint64_t bytes) {
     char text[32];
@@ -122,17 +104,13 @@ public:
             return;
         }
         if (open_path_ != e.path) {
-            if (fd_ >= 0) ::close(fd_);
-            fd_ = ::open((directory_ / e.path).c_str(), O_RDONLY | O_CLOEXEC);
-            if (fd_ < 0) fail_errno("cannot read " + (directory_ / e.path).string());
+            std::error_code ec;
+            file_ = host::RandomAccessFile::open(directory_ / e.path, {true, false, false, false}, ec);
+            if (!file_) fail("cannot read " + (directory_ / e.path).string() + ": " + ec.message());
             open_path_ = e.path;
         }
-        for (uint64_t done = 0; done < length;) {
-            const ssize_t n = ::pread(fd_, out + done, length - done, static_cast<off_t>(offset + done));
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) fail("cannot read " + (directory_ / e.path).string());
-            done += static_cast<uint64_t>(n);
-        }
+        if (file_->read_at(offset, out, length) != length)
+            fail("cannot read " + (directory_ / e.path).string());
     }
 
     std::optional<std::vector<uint8_t>> read_all(const std::string& path) {
@@ -143,15 +121,11 @@ public:
         return data;
     }
 
-    ~Source() {
-        if (fd_ >= 0) ::close(fd_);
-    }
-
 private:
     std::unique_ptr<ZArchiveReader> archive_;
     fs::path directory_;
     std::vector<Entry> files_;
-    int fd_ = -1;
+    std::shared_ptr<host::RandomAccessFile> file_;
     std::string open_path_;
 };
 
@@ -183,7 +157,8 @@ std::optional<std::string> dialog(SDL_FileDialogType type, const char* title, co
     Choice choice;
     const SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING, title);
-    SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, start.c_str());
+    const std::string start_utf8 = host::path_string(start);
+    SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, start_utf8.c_str());
     if (type == SDL_FILEDIALOG_OPENFILE) {
         SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, const_cast<SDL_DialogFileFilter*>(kFilters));
         SDL_SetNumberProperty(props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 2);
@@ -203,7 +178,7 @@ std::optional<std::string> dialog(SDL_FileDialogType type, const char* title, co
 
 // Asks on the terminal (Enter takes the suggestion); none without one.
 std::optional<std::string> ask(const std::string& question, const std::string& suggestion) {
-    if (!isatty(STDIN_FILENO)) return std::nullopt;
+    if (!host::is_terminal(stdin)) return std::nullopt;
     if (suggestion.empty()) std::fprintf(stderr, "%s: ", question.c_str());
     else std::fprintf(stderr, "%s [%s]: ", question.c_str(), suggestion.c_str());
     std::string line;
@@ -275,16 +250,15 @@ uint64_t free_space(fs::path folder) {
     while (folder.has_parent_path() && folder != folder.parent_path() && !fs::exists(folder, ec)) {
         folder = folder.parent_path();
     }
-    struct statvfs s {};
-    if (statvfs(folder.c_str(), &s) != 0) return UINT64_MAX;
-    return static_cast<uint64_t>(s.f_bavail) * s.f_frsize;
+    const fs::space_info info = fs::space(folder, ec);
+    return ec ? UINT64_MAX : info.available;
 }
 
 // ---------------------------------------------------------------- copying
 
 class Progress {
 public:
-    explicit Progress(uint64_t total) : total_(total), tty_(isatty(STDERR_FILENO)) {}
+    explicit Progress(uint64_t total) : total_(total), tty_(host::is_terminal(stderr)) {}
 
     void kept(uint64_t bytes) { done_ += bytes; }
 
@@ -317,15 +291,6 @@ private:
     Clock::time_point start_ = Clock::now(), printed_ = start_;
 };
 
-void write_all(int fd, const uint8_t* data, uint64_t size, const fs::path& path) {
-    for (uint64_t done = 0; done < size;) {
-        const ssize_t n = ::write(fd, data + done, size - done);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) fail_errno("cannot write " + path.string());
-        done += static_cast<uint64_t>(n);
-    }
-}
-
 // Copies the title into `game`; counts the files kept that differ in size
 // from the game's (changed by the user).
 void copy_title(Source& source, const fs::path& game, uint32_t& changed) {
@@ -344,44 +309,45 @@ void copy_title(Source& source, const fs::path& game, uint32_t& changed) {
         if (ec) fail("cannot create " + target.parent_path().string() + ": " + ec.message());
         fs::path part = target;
         part += ".part";
-        const int fd = ::open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-        if (fd < 0) fail_errno("cannot write " + part.string());
-        try {
-            for (uint64_t offset = 0; offset < e.size;) {
-                const uint64_t length = std::min<uint64_t>(buffer.size(), e.size - offset);
-                source.read(e, offset, length, buffer.data());
-                write_all(fd, buffer.data(), length, part);
-                offset += length;
-                progress.copied(length);
-            }
-        } catch (...) {
-            ::close(fd);
-            throw;
+        std::ofstream out(part, std::ios::binary | std::ios::trunc);
+        if (!out) fail("cannot write " + part.string());
+        for (uint64_t offset = 0; offset < e.size;) {
+            const uint64_t length = std::min<uint64_t>(buffer.size(), e.size - offset);
+            source.read(e, offset, length, buffer.data());
+            out.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(length));
+            if (!out) fail("cannot write " + part.string());
+            offset += length;
+            progress.copied(length);
         }
-        // On disk before it gets its name: a file with its name is complete.
-        if (::fdatasync(fd) != 0) {
-            ::close(fd);
-            fail_errno("cannot write " + part.string());
-        }
-        if (::close(fd) != 0) fail_errno("cannot write " + part.string());
-        if (::rename(part.c_str(), target.c_str()) != 0) fail_errno("cannot rename " + part.string());
+        out.flush();
+        out.close();
+        if (!out) fail("cannot write " + part.string());
+        fs::rename(part, target, ec);
+        if (ec) fail("cannot rename " + part.string() + ": " + ec.message());
     }
     progress.finish();
 }
 
 void install_executable(const fs::path& folder) {
+#ifdef _WIN32
+    const fs::path target = folder / (std::string(kName) + ".exe");
+#else
     const fs::path target = folder / kName;
+#endif
     std::error_code ec;
-    if (fs::equivalent(kSelf, target, ec)) return; // the installed copy is running
+    const fs::path self = self_path();
+    if (fs::equivalent(self, target, ec)) return; // the installed copy is running
     fs::path part = target;
     part += ".part";
-    fs::copy_file(kSelf, part, fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(self, part, fs::copy_options::overwrite_existing, ec);
+#ifndef _WIN32
     if (!ec) {
         fs::permissions(part,
                         fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec | fs::perms::others_read |
                             fs::perms::others_exec,
                         ec);
     }
+#endif
     if (!ec) fs::rename(part, target, ec);
     if (ec) fail("cannot copy the executable to " + target.string() + ": " + ec.message());
     // (Installs before it had its name called it ttt2.)
@@ -392,11 +358,29 @@ void install_icon(const std::optional<std::vector<uint8_t>>& tga, const fs::path
     std::vector<uint8_t> rgba;
     uint32_t width = 0, height = 0;
     if (!tga || !decode_tga(*tga, rgba, width, height) ||
-        !gpu::vk::write_png((folder / "icon.png").string(), rgba.data(), width, height)) {
+        !gpu::vk::write_png(host::path_string(folder / "icon.png"), rgba.data(), width, height)) {
         std::fprintf(stderr, "ttt2: warning: no icon (meta/iconTex.tga)\n");
     }
 }
 
+#ifdef _WIN32
+fs::path launcher_file() {
+    const char* appdata = std::getenv("APPDATA");
+    fs::path root = appdata && *appdata ? fs::path(appdata) : host::config_directory();
+    return root / "Microsoft/Windows/Start Menu/Programs/Tekken Tag Tournament 2.cmd";
+}
+
+void install_launcher(const fs::path& folder) {
+    const fs::path file = launcher_file();
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << "@echo off\r\n"
+           "cd /d \"" << host::path_string(folder) << "\"\r\n"
+           "start \"\" \"Tekken Tag Tournament 2.exe\"\r\n";
+    if (!out) fail("cannot write " + host::path_string(file));
+}
+#else
 // A desktop entry's string value, escaped.
 std::string desktop_string(const std::string& text) {
     std::string out;
@@ -408,8 +392,6 @@ std::string desktop_string(const std::string& text) {
     return out;
 }
 
-// The Exec key's program: quoted (", `, $ and \ escaped in the quotes),
-// then escaped as a string, % doubled.
 std::string desktop_exec(const std::string& path) {
     std::string quoted = "\"";
     for (char c : path) {
@@ -425,7 +407,7 @@ std::string desktop_exec(const std::string& path) {
     return out;
 }
 
-fs::path launcher_file() { return xdg("XDG_DATA_HOME", ".local/share") / "applications" / "ttt2.desktop"; }
+fs::path launcher_file() { return host::data_directory() / "applications" / "ttt2.desktop"; }
 
 void install_launcher(const fs::path& folder) {
     const fs::path file = launcher_file();
@@ -437,16 +419,10 @@ void install_launcher(const fs::path& folder) {
         std::ofstream out(part);
         out << "[Desktop Entry]\n"
                "Type=Application\n"
-               "Name="
-            << kName
-            << "\n"
+               "Name=" << kName << "\n"
                "Comment=Tekken Tag Tournament 2 Wii U Edition, native port\n"
-               "Exec="
-            << desktop_exec((folder / kName).string())
-            << "\n"
-               "Icon="
-            << desktop_string((folder / "icon.png").string())
-            << "\n"
+               "Exec=" << desktop_exec((folder / kName).string()) << "\n"
+               "Icon=" << desktop_string((folder / "icon.png").string()) << "\n"
                "Terminal=false\n"
                "Categories=Game;ActionGame;\n"
                "Keywords=Tekken;fighting;\n"
@@ -456,6 +432,7 @@ void install_launcher(const fs::path& folder) {
     fs::rename(part, file, ec);
     if (ec) fail("cannot write " + file.string() + ": " + ec.message());
 }
+#endif
 
 void record(const fs::path& folder) {
     std::error_code ec;
@@ -484,13 +461,13 @@ int install(const std::vector<std::string>& positional, bool launcher) {
 
     // Space for what is not there yet, and the executable.
     std::error_code ec;
-    uint64_t needed = fs::file_size(kSelf, ec);
+    uint64_t needed = fs::file_size(self_path(), ec);
     if (ec) fail("cannot read this executable: " + ec.message());
     for (const Entry& e : source.files()) {
         if (!fs::exists(fs::symlink_status(folder / "game" / e.path, ec))) needed += e.size;
     }
     const uint64_t available = free_space(folder);
-    std::fprintf(stderr, "ttt2: installing into %s: %s to copy, %s free\n", folder.c_str(), gigabytes(needed).c_str(),
+    std::fprintf(stderr, "ttt2: installing into %s: %s to copy, %s free\n", host::path_string(folder).c_str(), gigabytes(needed).c_str(),
                  gigabytes(available).c_str());
     if (needed > available) fail("not enough free space in " + folder.string());
 
@@ -503,10 +480,6 @@ int install(const std::vector<std::string>& positional, bool launcher) {
     copy_title(source, folder / "game", changed);
     install_executable(folder);
     install_icon(source.read_all("meta/iconTex.tga"), folder);
-    if (const int fd = ::open(folder.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); fd >= 0) {
-        ::syncfs(fd); // (the renames too)
-        ::close(fd);
-    }
     {
         std::ofstream marker(folder / kMarker);
         marker << "TEKKEN TAG 2 Wii U EDITION (EU) v16\nrpx-sha256 " << cafe_program_info.rpx_sha256 << '\n';
@@ -521,7 +494,7 @@ int install(const std::vector<std::string>& positional, bool launcher) {
                      changed == 1 ? "file that differs" : "files that differ");
     }
     std::fprintf(stderr, "ttt2: installed. Start %s%s\"%s\"\n", kName,
-                 launcher ? " from the application menu or with " : " with ", (folder / kName).c_str());
+                 launcher ? " from the application menu or with " : " with ", host::path_string(folder / kName).c_str());
     std::fprintf(stderr, "ttt2: the .wua is no longer needed to play. After rebuilding the port, ttt2 --update copies the new "
                          "executable into the install.\n");
     return 0;
@@ -535,7 +508,7 @@ int update(const std::vector<std::string>& positional) {
     std::error_code ec;
     if (!folder || !fs::exists(*folder / kMarker, ec)) fail("no complete install to update: run ttt2 --install first");
     install_executable(*folder);
-    std::fprintf(stderr, "ttt2: updated the executable in %s\n", folder->c_str());
+    std::fprintf(stderr, "ttt2: updated the executable in %s\n", host::path_string(*folder).c_str());
     return 0;
 }
 
@@ -554,7 +527,7 @@ int run(const std::vector<std::string>& args) {
         }
         return updating ? update(positional) : install(positional, launcher);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "%sttt2: install: %s\n", isatty(STDERR_FILENO) ? "\n" : "", e.what());
+        std::fprintf(stderr, "%sttt2: install: %s\n", host::is_terminal(stderr) ? "\n" : "", e.what());
         return 1;
     }
 }
@@ -562,14 +535,14 @@ int run(const std::vector<std::string>& args) {
 std::optional<fs::path> installed_game() {
     std::vector<fs::path> folders;
     std::error_code ec;
-    const fs::path self = fs::read_symlink("/proc/self/exe", ec);
-    if (!ec) folders.push_back(self.parent_path());
+    const fs::path self = self_path();
+    if (!self.empty()) folders.push_back(self.parent_path());
     if (const auto recorded = recorded_folder()) folders.push_back(*recorded);
     for (const fs::path& folder : folders) {
         if (fs::exists(folder / kMarker, ec)) return folder / "game";
         if (fs::exists(folder / kStarted, ec)) {
             std::fprintf(stderr, "ttt2: the install in %s is incomplete: run ttt2 --install again to finish it\n",
-                         folder.c_str());
+                         host::path_string(folder).c_str());
         }
     }
     return std::nullopt;

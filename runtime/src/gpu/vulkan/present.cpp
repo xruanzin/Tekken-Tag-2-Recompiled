@@ -29,6 +29,8 @@
 
 #include "gpu/gpu.h"
 #include "host/window.h"
+#include "host/platform.h"
+#include "gpu/vulkan/fsr1_embedded.h"
 
 #include "cafe/runtime.h"
 
@@ -59,22 +61,160 @@ double now_seconds() {
 } // namespace
 
 // The compute shader that scales a presentation image into the swapchain.
+// flags bit 0: edge anti-aliasing. sharpness: 0 disables adaptive sharpening.
 constexpr const char* kScaleShader = R"(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#define A_GPU 1
+#define A_GLSL 1
+#include "ffx_a.h"
+
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1) writeonly uniform image2D target;
-layout(push_constant) uniform Rect { ivec2 offset; ivec2 size; ivec2 extent; } rect;
+
+#define FSR_EASU_F 1
+AF4 FsrEasuRF(AF2 p) { return textureGather(source, p, 0); }
+AF4 FsrEasuGF(AF2 p) { return textureGather(source, p, 1); }
+AF4 FsrEasuBF(AF2 p) { return textureGather(source, p, 2); }
+#include "ffx_fsr1.h"
+
+layout(push_constant) uniform Rect {
+    ivec2 offset;
+    ivec2 size;
+    ivec2 extent;
+    float sharpness;
+    uint flags; // bit 0 FXAA, bit 1 FidelityFX FSR 1 EASU
+    uvec4 con0;
+    uvec4 con1;
+    uvec4 con2;
+    uvec4 con3;
+} rect;
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+vec3 filtered(vec2 uv) {
+    vec3 c = textureLod(source, uv, 0.0).rgb;
+    vec2 texel = 1.0 / vec2(textureSize(source, 0));
+    if ((rect.flags & 1u) != 0u) {
+        vec3 n = textureLod(source, uv + vec2(0.0, -texel.y), 0.0).rgb;
+        vec3 s = textureLod(source, uv + vec2(0.0,  texel.y), 0.0).rgb;
+        vec3 w = textureLod(source, uv + vec2(-texel.x, 0.0), 0.0).rgb;
+        vec3 e = textureLod(source, uv + vec2( texel.x, 0.0), 0.0).rgb;
+        float lc = luma(c), ln = luma(n), ls = luma(s), lw = luma(w), le = luma(e);
+        float lo = min(lc, min(min(ln, ls), min(lw, le)));
+        float hi = max(lc, max(max(ln, ls), max(lw, le)));
+        if (hi - lo > max(0.0312, hi * 0.125)) {
+            vec2 dir = vec2(lw - le, ln - ls);
+            float m = max(abs(dir.x), abs(dir.y));
+            if (m > 1e-5) {
+                dir = dir / m * texel * 0.75;
+                c = 0.5 * (textureLod(source, uv - dir, 0.0).rgb +
+                           textureLod(source, uv + dir, 0.0).rgb);
+            }
+        }
+    }
+    if (rect.sharpness > 0.001) {
+        vec3 n = textureLod(source, uv + vec2(0.0, -texel.y), 0.0).rgb;
+        vec3 s = textureLod(source, uv + vec2(0.0,  texel.y), 0.0).rgb;
+        vec3 w = textureLod(source, uv + vec2(-texel.x, 0.0), 0.0).rgb;
+        vec3 e = textureLod(source, uv + vec2( texel.x, 0.0), 0.0).rgb;
+        vec3 blur = 0.25 * (n + s + w + e);
+        c = clamp(c + (c - blur) * rect.sharpness, 0.0, 1.0);
+    }
+    return c;
+}
+
 void main() {
     const ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(xy, rect.extent))) return;
     const ivec2 p = xy - rect.offset;
     vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
     if (all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, rect.size))) {
-        c = vec4(textureLod(source, (vec2(p) + 0.5) / vec2(rect.size), 0.0).rgb, 1.0);
+        if ((rect.flags & 2u) != 0u) {
+            AF3 fsr;
+            FsrEasuF(fsr, AU2(p), rect.con0, rect.con1, rect.con2, rect.con3);
+            vec3 fsrColor = vec3(fsr);
+            // Lightweight post-EASU sharpening controlled by the launcher's
+            // sharpness slider. FSR's EASU itself remains the official AMD pass.
+            if (rect.sharpness > 0.001) {
+                vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
+                vec2 texel = 1.0 / vec2(textureSize(source, 0));
+                vec3 n = textureLod(source, uv + vec2(0.0, -texel.y), 0.0).rgb;
+                vec3 s = textureLod(source, uv + vec2(0.0,  texel.y), 0.0).rgb;
+                vec3 w = textureLod(source, uv + vec2(-texel.x, 0.0), 0.0).rgb;
+                vec3 e = textureLod(source, uv + vec2( texel.x, 0.0), 0.0).rgb;
+                vec3 blur = 0.25 * (n + s + w + e);
+                fsrColor = clamp(fsrColor + (fsrColor - blur) * rect.sharpness, 0.0, 1.0);
+            }
+            c = vec4(fsrColor, 1.0);
+        } else {
+            vec2 uv = (vec2(p) + 0.5) / vec2(rect.size);
+            c = vec4(filtered(uv), 1.0);
+        }
     }
     imageStore(target, xy, c);
 }
 )";
+
+bool env_on(const char* name) {
+    const char* value = std::getenv(name);
+    return value && *value && *value != '0';
+}
+
+bool nearest_scaling() {
+    const char* value = std::getenv("TTT2_UPSCALER");
+    return value && std::strcmp(value, "nearest") == 0;
+}
+
+bool fsr1_scaling() {
+    const char* value = std::getenv("TTT2_UPSCALER");
+    return value && std::strcmp(value, "fsr1") == 0;
+}
+
+uint32_t float_bits(float value) {
+    uint32_t bits = 0;
+    static_assert(sizeof bits == sizeof value);
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+shaderc_include_result* scale_include(void*, const char* requested, int, const char*, size_t) {
+    auto* result = new shaderc_include_result{};
+    if (std::strcmp(requested, "ffx_a.h") == 0) {
+        result->source_name = "ffx_a.h";
+        result->source_name_length = 7;
+        result->content = fsr1_embedded::kFfxA;
+        result->content_length = std::strlen(fsr1_embedded::kFfxA);
+    } else if (std::strcmp(requested, "ffx_fsr1.h") == 0) {
+        result->source_name = "ffx_fsr1.h";
+        result->source_name_length = 10;
+        result->content = fsr1_embedded::kFfxFsr1;
+        result->content_length = std::strlen(fsr1_embedded::kFfxFsr1);
+    } else {
+        static constexpr const char kError[] = "unknown shader include";
+        result->source_name = "";
+        result->source_name_length = 0;
+        result->content = kError;
+        result->content_length = sizeof(kError) - 1;
+    }
+    return result;
+}
+
+void scale_include_release(void*, shaderc_include_result* result) { delete result; }
+
+float presentation_sharpness() {
+    const char* mode = std::getenv("TTT2_UPSCALER");
+    if (!mode || (std::strcmp(mode, "sharp") != 0 && std::strcmp(mode, "fsr1") != 0)) return 0.0f;
+    if (const char* value = std::getenv("TTT2_SHARPEN")) {
+        return std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f);
+    }
+    return 0.25f;
+}
+
+bool presentation_fxaa() {
+    const char* value = std::getenv("TTT2_AA");
+    return value && std::strcmp(value, "fxaa") == 0;
+}
 
 void Renderer::start_presenter() {
     // The compute path needs a presenting compute queue and storage writes
@@ -109,6 +249,7 @@ void Renderer::start_presenter() {
     if (compute_present_) {
         shaderc_compile_options_t options = shaderc_compile_options_initialize();
         shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+        shaderc_compile_options_set_include_callbacks(options, scale_include, scale_include_release, nullptr);
         shaderc_compilation_result_t result = shaderc_compile_into_spv(compiler_, kScaleShader, std::strlen(kScaleShader),
                                                                        shaderc_compute_shader, "scale", "main", options);
         shaderc_compile_options_release(options);
@@ -130,7 +271,7 @@ void Renderer::start_presenter() {
         dli.pBindings = bindings;
         VkDescriptorSetLayout set_layout;
         VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device, &dli, nullptr, &set_layout));
-        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
+        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 96};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
         pli.pSetLayouts = &set_layout;
@@ -144,9 +285,16 @@ void Renderer::start_presenter() {
         VK_CHECK(vkCreateComputePipelines(ctx_.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &scale_pipeline_));
         vkDestroyShaderModule(ctx_.device, module, nullptr);
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+        sci.magFilter = sci.minFilter = nearest_scaling() ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
         sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(ctx_.device, &sci, nullptr, &scale_sampler_));
+        const char* mode = fsr1_scaling() ? "FidelityFX FSR 1 EASU" : nearest_scaling() ? "nearest" : "linear";
+        std::fprintf(stderr, "ttt2: GPU: presentation %s%s%s\n",
+                     mode,
+                     presentation_fxaa() && !fsr1_scaling() ? " + FXAA" : "",
+                     presentation_sharpness() > 0.001f ? " + adaptive sharpening" : "");
+    } else if (presentation_fxaa() || presentation_sharpness() > 0.001f) {
+        std::fprintf(stderr, "ttt2: GPU: presentation effects unavailable on the blit path\n");
     }
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.queueFamilyIndex = present_family_;
@@ -211,8 +359,7 @@ uint32_t Renderer::take_present_image() {
 // timeline value at which the copy has finished.
 uint32_t Renderer::copy_scan_to_present_image(uint64_t& ready) {
     const uint32_t i = take_present_image();
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkImageCopy region{};
     region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -415,7 +562,8 @@ void Renderer::choose_presentation(double hz) {
 }
 
 void Renderer::presenter_main() {
-    pthread_setname_np(pthread_self(), "present");
+    host::set_thread_name("present");
+    host::set_thread_high_priority();
     // The mode follows the window's display: chosen again when the window
     // moves to another display or its mode changes, or when the display
     // turns out to refresh at another rate than reported.
@@ -970,11 +1118,18 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         di.pImageMemoryBarriers = &ib;
         vkCmdPipelineBarrier2(present_cmd_, &di);
     };
-    // Letterboxed to the TV image's aspect ratio.
-    const double scale = std::min(double(swapchain_extent_.width) / src.width, double(swapchain_extent_.height) / src.height);
-    const int32_t w = static_cast<int32_t>(src.width * scale), h = static_cast<int32_t>(src.height * scale);
-    const int32_t x = (static_cast<int32_t>(swapchain_extent_.width) - w) / 2;
-    const int32_t y = (static_cast<int32_t>(swapchain_extent_.height) - h) / 2;
+    // Preserve 16:9 by default; TTT2_STRETCH=1 fills the whole output.
+    int32_t x = 0, y = 0;
+    int32_t w = static_cast<int32_t>(swapchain_extent_.width);
+    int32_t h = static_cast<int32_t>(swapchain_extent_.height);
+    if (!env_on("TTT2_STRETCH")) {
+        const double scale = std::min(double(swapchain_extent_.width) / src.width,
+                                      double(swapchain_extent_.height) / src.height);
+        w = static_cast<int32_t>(src.width * scale);
+        h = static_cast<int32_t>(src.height * scale);
+        x = (static_cast<int32_t>(swapchain_extent_.width) - w) / 2;
+        y = (static_cast<int32_t>(swapchain_extent_.height) - h) / 2;
+    }
     if (compute_present_) {
         transition(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
         vkCmdBindPipeline(present_cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, scale_pipeline_);
@@ -991,9 +1146,54 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[1].pImageInfo = &target;
         ctx_.cmd_push_descriptor_set(present_cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, scale_layout_, 0, 2, writes);
-        const int32_t rect[6] = {x, y, w, h, static_cast<int32_t>(swapchain_extent_.width),
-                                 static_cast<int32_t>(swapchain_extent_.height)};
-        vkCmdPushConstants(present_cmd_, scale_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof rect, rect);
+        const bool scaling = w != static_cast<int32_t>(src.width) ||
+                             h != static_cast<int32_t>(src.height);
+        // EASU is an upscaler, not a free post-process. At native 1:1
+        // resolution it only adds GPU work, especially painful on iGPUs.
+        const bool use_fsr1 = fsr1_scaling() && scaling &&
+                              w >= static_cast<int32_t>(src.width) &&
+                              h >= static_cast<int32_t>(src.height);
+        struct PresentConstants {
+            int32_t offset[2];
+            int32_t size[2];
+            int32_t extent[2];
+            float sharpness;
+            uint32_t flags;
+            uint32_t con0[4];
+            uint32_t con1[4];
+            uint32_t con2[4];
+            uint32_t con3[4];
+        } rect{};
+        rect.offset[0] = x; rect.offset[1] = y;
+        rect.size[0] = w; rect.size[1] = h;
+        rect.extent[0] = static_cast<int32_t>(swapchain_extent_.width);
+        rect.extent[1] = static_cast<int32_t>(swapchain_extent_.height);
+        // In FSR mode at 1:1, preserve native detail instead of paying
+        // for a redundant sharpening pass. Explicit "sharp" mode still
+        // keeps its sharpening behavior at native resolution.
+        rect.sharpness = (!scaling && fsr1_scaling()) ? 0.0f : presentation_sharpness();
+        rect.flags = (presentation_fxaa() && !use_fsr1 ? 1u : 0u) | (use_fsr1 ? 2u : 0u);
+
+        if (use_fsr1) {
+            const float in_w = static_cast<float>(src.width), in_h = static_cast<float>(src.height);
+            const float out_w = static_cast<float>(w), out_h = static_cast<float>(h);
+            rect.con0[0] = float_bits(in_w / out_w);
+            rect.con0[1] = float_bits(in_h / out_h);
+            rect.con0[2] = float_bits(0.5f * in_w / out_w - 0.5f);
+            rect.con0[3] = float_bits(0.5f * in_h / out_h - 0.5f);
+            rect.con1[0] = float_bits(1.0f / in_w);
+            rect.con1[1] = float_bits(1.0f / in_h);
+            rect.con1[2] = float_bits(1.0f / in_w);
+            rect.con1[3] = float_bits(-1.0f / in_h);
+            rect.con2[0] = float_bits(-1.0f / in_w);
+            rect.con2[1] = float_bits(2.0f / in_h);
+            rect.con2[2] = float_bits(1.0f / in_w);
+            rect.con2[3] = float_bits(2.0f / in_h);
+            rect.con3[0] = float_bits(0.0f);
+            rect.con3[1] = float_bits(4.0f / in_h);
+            rect.con3[2] = rect.con3[3] = 0;
+        }
+        vkCmdPushConstants(present_cmd_, scale_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof rect, &rect);
         vkCmdDispatch(present_cmd_, (swapchain_extent_.width + 15) / 16, (swapchain_extent_.height + 15) / 16, 1);
         transition(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     } else {
@@ -1009,7 +1209,7 @@ bool Renderer::present_image(uint32_t i, uint64_t ready, uint64_t present_id) {
         blit.dstOffsets[0] = {x, y, 0};
         blit.dstOffsets[1] = {x + w, y + h, 1};
         vkCmdBlitImage(present_cmd_, src.image, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                       &blit, VK_FILTER_LINEAR);
+                       &blit, nearest_scaling() ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
         transition(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     }
     VK_CHECK(vkEndCommandBuffer(present_cmd_));

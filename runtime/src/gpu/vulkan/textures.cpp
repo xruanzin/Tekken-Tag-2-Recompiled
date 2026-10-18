@@ -15,12 +15,25 @@
 #include "gx2/internal.h"
 
 #include "cafe/runtime.h"
+#include "host/platform.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <functional>
+#include <iterator>
+#include <mutex>
+#include <unordered_map>
+#include <memory>
+#include <thread>
 #include <set>
 #include <string>
 
@@ -49,6 +62,307 @@ uint64_t hash_bytes(const uint8_t* data, size_t size) {
     }
     for (; i < size; ++i) h = (h ^ data[i]) * 0x100000001B3ull;
     return h;
+}
+
+constexpr uint32_t kTextureCacheMagic = 0x32585454u; // "TTX2"
+constexpr uint32_t kTextureCacheVersion = 2;
+constexpr uint64_t kMaxCachedTextureBytes = 64ull << 20;
+constexpr uint64_t kMiB = 1ull << 20;
+constexpr uint64_t kGiB = 1ull << 30;
+
+uint64_t texture_ram_cache_budget() {
+    const uint64_t total = host::system_memory_total_bytes();
+    const uint64_t available = host::system_memory_available_bytes();
+
+    uint64_t target = 64ull * kMiB;
+    if (total >= 8ull * kGiB) target = 128ull * kMiB;
+    if (total >= 12ull * kGiB) target = 256ull * kMiB;
+    if (total >= 16ull * kGiB) target = 384ull * kMiB;
+    if (total >= 24ull * kGiB) target = 512ull * kMiB;
+    if (total >= 32ull * kGiB) target = 768ull * kMiB;
+    if (total >= 48ull * kGiB) target = 1024ull * kMiB;
+
+    // Keep a large safety margin for the title, driver and Windows. The cache
+    // grows with capable systems but backs off automatically under pressure.
+    if (available != 0) target = std::min<uint64_t>(target, std::max<uint64_t>(64ull * kMiB, available / 6));
+    return target;
+}
+
+uint64_t texture_cache_writer_budget() {
+    return std::clamp<uint64_t>(texture_ram_cache_budget() / 2, 64ull * kMiB, 256ull * kMiB);
+}
+
+class TextureRamCache {
+public:
+    TextureRamCache() : budget_(texture_ram_cache_budget()) {
+        char info[160]{};
+        std::snprintf(info, sizeof(info), "MEMORY texture_ram_cache=%lluMB texture_write_queue=%lluMB",
+                      static_cast<unsigned long long>(budget_ >> 20),
+                      static_cast<unsigned long long>(texture_cache_writer_budget() >> 20));
+        cafe::diagnostic_trace(info);
+    }
+
+    std::shared_ptr<const std::vector<uint8_t>> find(uint64_t key, size_t expected) {
+        std::lock_guard lock(mutex_);
+        auto it = entries_.find(key);
+        if (it == entries_.end()) return {};
+        if (!it->second.payload || it->second.payload->size() != expected) {
+            bytes_ -= it->second.payload ? it->second.payload->size() : 0;
+            entries_.erase(it);
+            return {};
+        }
+        it->second.stamp = ++clock_;
+        return it->second.payload;
+    }
+
+    std::shared_ptr<const std::vector<uint8_t>> insert(uint64_t key, std::vector<uint8_t>&& payload) {
+        auto shared = std::make_shared<const std::vector<uint8_t>>(std::move(payload));
+        if (shared->empty() || shared->size() > kMaxCachedTextureBytes || budget_ == 0) return shared;
+
+        std::lock_guard lock(mutex_);
+        if (auto old = entries_.find(key); old != entries_.end()) {
+            bytes_ -= old->second.payload ? old->second.payload->size() : 0;
+            entries_.erase(old);
+        }
+
+        while (!entries_.empty() && bytes_ + shared->size() > budget_) {
+            auto victim = entries_.begin();
+            for (auto it = std::next(entries_.begin()); it != entries_.end(); ++it) {
+                if (it->second.stamp < victim->second.stamp) victim = it;
+            }
+            bytes_ -= victim->second.payload ? victim->second.payload->size() : 0;
+            entries_.erase(victim);
+        }
+
+        if (shared->size() <= budget_) {
+            bytes_ += shared->size();
+            entries_.emplace(key, Entry{shared, ++clock_});
+        }
+        return shared;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<const std::vector<uint8_t>> payload;
+        uint64_t stamp = 0;
+    };
+
+    std::mutex mutex_;
+    std::unordered_map<uint64_t, Entry> entries_;
+    uint64_t budget_ = 0;
+    uint64_t bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+TextureRamCache& texture_ram_cache() {
+    static TextureRamCache cache;
+    return cache;
+}
+
+struct TextureCacheHeader {
+    uint32_t magic = kTextureCacheMagic;
+    uint32_t version = kTextureCacheVersion;
+    uint64_t key = 0;
+    uint64_t payload_size = 0;
+    uint64_t payload_hash = 0;
+};
+
+bool texture_cache_enabled() {
+    // The asynchronous detile/cache path is experimental. It can observe guest
+    // texture memory while another guest thread is updating it and then make
+    // that inconsistent snapshot persistent. Keep the deterministic original
+    // upload path as the player default; developers can opt back in with
+    // TTT2_TEXTURE_CACHE=1 while validating the fast path.
+    static const bool enabled = [] {
+        const char* value = std::getenv("TTT2_TEXTURE_CACHE");
+        return value && *value == '1';
+    }();
+    return enabled;
+}
+
+std::filesystem::path texture_cache_directory() {
+    static const std::filesystem::path dir = [] {
+        if (!texture_cache_enabled()) return std::filesystem::path();
+        std::filesystem::path d = host::cache_directory() / "ttt2" / "textures-v2";
+        std::error_code ec;
+        std::filesystem::create_directories(d, ec);
+        return ec ? std::filesystem::path() : d;
+    }();
+    return dir;
+}
+
+std::filesystem::path texture_cache_path(uint64_t key) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "%016llx.bin", static_cast<unsigned long long>(key));
+    return texture_cache_directory() / name;
+}
+
+bool load_texture_cache(uint64_t key, size_t expected, std::vector<uint8_t>& payload) {
+    if (texture_cache_directory().empty() || expected == 0 || expected > kMaxCachedTextureBytes) return false;
+    std::ifstream in(texture_cache_path(key), std::ios::binary | std::ios::ate);
+    if (!in) return false;
+    const auto size = in.tellg();
+    if (size != static_cast<std::streamoff>(sizeof(TextureCacheHeader) + expected)) return false;
+    in.seekg(0);
+    TextureCacheHeader header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!in || header.magic != kTextureCacheMagic || header.version != kTextureCacheVersion ||
+        header.key != key || header.payload_size != expected) {
+        return false;
+    }
+    payload.resize(expected);
+    in.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(expected));
+    if (!in) return false;
+    return hash_bytes(payload.data(), payload.size()) == header.payload_hash;
+}
+
+class TextureCacheWriter {
+public:
+    TextureCacheWriter() : thread_([this] { run(); }) {}
+    ~TextureCacheWriter() {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void enqueue(uint64_t key, std::shared_ptr<const std::vector<uint8_t>> payload) {
+        if (texture_cache_directory().empty() || !payload || payload->empty() ||
+            payload->size() > kMaxCachedTextureBytes) {
+            return;
+        }
+        std::lock_guard lock(mutex_);
+        if (queued_bytes_ + payload->size() > texture_cache_writer_budget()) return;
+        queued_bytes_ += payload->size();
+        queue_.push_back({key, std::move(payload)});
+        cv_.notify_one();
+    }
+
+private:
+    struct Item {
+        uint64_t key;
+        std::shared_ptr<const std::vector<uint8_t>> payload;
+    };
+
+    void run() {
+        host::set_thread_name("texture-cache");
+        host::set_thread_low_priority();
+        for (;;) {
+            Item item{};
+            {
+                std::unique_lock lock(mutex_);
+                cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
+                if (stop_ && queue_.empty()) return;
+                item = std::move(queue_.front());
+                queued_bytes_ -= item.payload ? item.payload->size() : 0;
+                queue_.pop_front();
+            }
+            const std::filesystem::path path = texture_cache_path(item.key);
+            const std::filesystem::path temporary = path.string() + ".tmp";
+            TextureCacheHeader header{};
+            header.key = item.key;
+            if (!item.payload) continue;
+            header.payload_size = item.payload->size();
+            header.payload_hash = hash_bytes(item.payload->data(), item.payload->size());
+            {
+                std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+                out.write(reinterpret_cast<const char*>(item.payload->data()),
+                          static_cast<std::streamsize>(item.payload->size()));
+                if (!out) {
+                    std::error_code ec;
+                    std::filesystem::remove(temporary, ec);
+                    continue;
+                }
+            }
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            ec.clear();
+            std::filesystem::rename(temporary, path, ec);
+            if (ec) std::filesystem::remove(temporary, ec);
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<Item> queue_;
+    uint64_t queued_bytes_ = 0;
+    bool stop_ = false;
+    std::thread thread_;
+};
+
+TextureCacheWriter& texture_cache_writer() {
+    static TextureCacheWriter writer;
+    return writer;
+}
+
+class TextureWorkerPool {
+public:
+    TextureWorkerPool() {
+        const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
+        const uint64_t total = host::system_memory_total_bytes();
+        worker_count_ = 1;
+        if (hardware >= 6 && total >= 8ull * kGiB) worker_count_ = 2;
+        if (hardware >= 16 && total >= 16ull * kGiB) worker_count_ = 3;
+        if (hardware >= 24 && total >= 24ull * kGiB) worker_count_ = 4;
+        for (uint32_t i = 0; i < worker_count_; ++i) workers_.emplace_back([this] { run(); });
+
+        char info[128]{};
+        std::snprintf(info, sizeof(info), "MEMORY texture_workers=%u logical_cpus=%u",
+                      worker_count_, hardware);
+        cafe::diagnostic_trace(info);
+    }
+    ~TextureWorkerPool() {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        for (std::thread& worker : workers_) if (worker.joinable()) worker.join();
+    }
+    std::future<void> submit(std::function<void()> fn) {
+        std::packaged_task<void()> job(std::move(fn));
+        std::future<void> result = job.get_future();
+        {
+            std::lock_guard lock(mutex_);
+            jobs_.push_back(std::move(job));
+        }
+        cv_.notify_one();
+        return result;
+    }
+    uint32_t worker_count() const { return worker_count_; }
+private:
+    void run() {
+        host::set_thread_name("texture-detile");
+        // The renderer waits for these jobs before it can upload a newly used
+        // texture. Low-priority workers were easily starved by the dynamic PPC
+        // threads, turning texture preparation into visible stalls.
+        host::set_thread_normal_priority();
+        for (;;) {
+            std::packaged_task<void()> job;
+            {
+                std::unique_lock lock(mutex_);
+                cv_.wait(lock, [&] { return stop_ || !jobs_.empty(); });
+                if (stop_ && jobs_.empty()) return;
+                job = std::move(jobs_.front());
+                jobs_.pop_front();
+            }
+            job();
+        }
+    }
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<std::packaged_task<void()>> jobs_;
+    std::vector<std::thread> workers_;
+    uint32_t worker_count_ = 1;
+    bool stop_ = false;
+};
+
+TextureWorkerPool& texture_worker_pool() {
+    static TextureWorkerPool pool;
+    return pool;
 }
 
 VkImageViewType view_type_of(uint32_t dim) {
@@ -89,6 +403,21 @@ Resource decode(const uint32_t* w) {
     if (r.dim == gx2::kDim1D || r.dim == gx2::kDim2D || r.dim == gx2::kDim2DMsaa) r.depth = 1;
     if (r.dim == gx2::kDim2DMsaa || r.dim == gx2::kDim2DMsaaArray) r.last_level = 0; // LAST_LEVEL holds the samples
     return r;
+}
+
+uint64_t texture_cache_key(uint64_t contents, const Resource& r, const gx2::Surface& surface, bool filtered) {
+    uint32_t words[] = {
+        static_cast<uint32_t>(contents), static_cast<uint32_t>(contents >> 32),
+        r.format, r.width, r.height, r.depth, r.dim, r.tile_mode,
+        r.depth_tiles ? 1u : 0u, r.base_level, r.last_level, r.first_slice, r.last_slice,
+        r.base, r.mips,
+        static_cast<uint32_t>(surface.mip_levels), static_cast<uint32_t>(surface.image),
+        static_cast<uint32_t>(surface.mipmaps), static_cast<uint32_t>(surface.swizzle),
+        static_cast<uint32_t>(surface.image_size), static_cast<uint32_t>(surface.image_size >> 32),
+        static_cast<uint32_t>(surface.mipmap_size), static_cast<uint32_t>(surface.mipmap_size >> 32),
+        static_cast<uint32_t>(surface.tile_mode), filtered ? 1u : 0u,
+    };
+    return hash_words(words, std::size(words));
 }
 
 // The GX2 surface a resource describes, laid out as GX2 laid it out.
@@ -213,8 +542,7 @@ void Renderer::copy_depth_to_texture(const Target& src, Texture& t, uint32_t wid
                                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
     region.imageExtent = {width, height, 1};
@@ -282,8 +610,7 @@ bool Renderer::load_texture_from_targets(Texture& t) {
     }
     if (t.scale != scale) create_texture_image(t, scale);
     const uint32_t block = f.compressed ? 4 : 1;
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     for (uint32_t level = 0; level < levels; ++level) {
         const Target* src = sources[level];
         if (src == nullptr || src->scale != scale) continue;
@@ -362,6 +689,18 @@ void Renderer::load_texture(Texture& t) {
     t.source = nullptr;
     t.loaded = stamp();
 
+    const auto texture_prepare_started = std::chrono::steady_clock::now();
+    const auto report_texture_prepare = [&](const char* kind) {
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - texture_prepare_started).count();
+        static const bool trace_loads = std::getenv("TTT2_TRACE_TEXTURE_LOADS") != nullptr;
+        if (trace_loads || ms >= 25.0) {
+            std::fprintf(stderr,
+                         "ttt2: gpu: texture %s 0x%08X fmt 0x%03X %ux%u levels %u prepared in %.2f ms\n",
+                         kind, uint32_t{s.image}, r.format, r.width, r.height, uint32_t{s.mip_levels}, ms);
+        }
+    };
+
     const uint32_t first_non_macro = (s.swizzle >> 16) & 0xFF;
     const uint32_t block = f.compressed ? 4 : 1;
     const auto tiled_level = [&](uint32_t level) {
@@ -384,6 +723,7 @@ void Renderer::load_texture(Texture& t) {
     // prints the MD5 a replacement names).
     static const bool trace = std::getenv("TTT2_TRACE_TEXTURES") != nullptr;
     std::array<uint8_t, 16> md5{};
+    std::vector<uint8_t> prepared_level0;
     const auto& replacements = gpu::texture_replacements();
     const bool candidate = r.dim == gx2::kDim2D && r.depth == 1 &&
                            std::any_of(replacements.begin(), replacements.end(), [&](const gpu::TextureReplacement& c) {
@@ -391,10 +731,10 @@ void Renderer::load_texture(Texture& t) {
                            });
     if (candidate || (trace && hw != fmt::k8)) {
         const uint32_t ew = (r.width + block - 1) / block, eh = (r.height + block - 1) / block;
-        std::vector<uint8_t> level0(size_t{ew} * eh * f.bytes);
-        detile(tiled_level(0), ew, eh, 0, 1, level0.data());
+        prepared_level0.resize(size_t{ew} * eh * f.bytes);
+        detile(tiled_level(0), ew, eh, 0, 1, prepared_level0.data());
         unsigned int length = 0;
-        EVP_Digest(level0.data(), level0.size(), md5.data(), &length, EVP_md5(), nullptr);
+        EVP_Digest(prepared_level0.data(), prepared_level0.size(), md5.data(), &length, EVP_md5(), nullptr);
         if (trace) {
             static std::set<std::array<uint8_t, 16>> seen;
             if (seen.insert(md5).second) {
@@ -421,8 +761,7 @@ void Renderer::load_texture(Texture& t) {
         t.rgba = replaced != nullptr;
         create_texture_image(t, 1);
     }
-    end_rendering();
-    barrier();
+    end_rendering_and_barrier();
     if (replaced) {
         // Level 0 as given, each smaller level the average of the one above.
         std::vector<uint8_t> level(*replaced);
@@ -458,42 +797,176 @@ void Renderer::load_texture(Texture& t) {
         }
         barrier();
         profile_mark("texture replaced", uint32_t{s.image}, r.width, r.height);
+        report_texture_prepare("replacement");
         return;
     }
     const gpu::PlaneFilter& plane_filter = gpu::plane_filter();
-    for (uint32_t level = 0; level < s.mip_levels; ++level) {
-        const uint32_t width = std::max(1u, r.width >> level), height = std::max(1u, r.height >> level);
-        const uint32_t ew = (width + block - 1) / block, eh = (height + block - 1) / block;
-        const uint32_t slices = r.dim == gx2::kDim3D ? std::max(1u, r.depth >> level) : r.depth;
-        const VkDeviceSize bytes = VkDeviceSize{ew} * eh * slices * f.bytes;
-        VkDeviceSize offset = 0;
-        uint8_t* staging = upload(bytes, 16, offset);
-        if (level == 0 && hw == fmt::k8 && slices == 1 && plane_filter) {
-            // (Staging memory is slow to read back.)
-            std::vector<uint8_t> plane(bytes);
-            detile(tiled_level(level), ew, eh, 0, slices, plane.data());
-            plane_filter(uint32_t{s.image}, ew, eh, plane.data());
-            std::memcpy(staging, plane.data(), plane.size());
-        } else {
-            detile(tiled_level(level), ew, eh, 0, slices, staging);
+
+    // Correctness-first path: match the original renderer. Detile each mip
+    // from guest memory on the render thread and upload it immediately. This
+    // guarantees that the hash, detile and Vulkan upload describe one coherent
+    // guest-memory snapshot instead of a mixture prepared by background jobs.
+    if (!texture_cache_enabled()) {
+        for (uint32_t level = 0; level < s.mip_levels; ++level) {
+            const uint32_t width = std::max(1u, r.width >> level);
+            const uint32_t height = std::max(1u, r.height >> level);
+            const uint32_t ew = (width + block - 1) / block;
+            const uint32_t eh = (height + block - 1) / block;
+            const uint32_t slices = r.dim == gx2::kDim3D ? std::max(1u, r.depth >> level) : r.depth;
+            const VkDeviceSize bytes = VkDeviceSize{ew} * eh * slices * f.bytes;
+            VkDeviceSize offset = 0;
+            uint8_t* staging = upload(bytes, 16, offset);
+
+            if (level == 0 && hw == fmt::k8 && slices == 1 && plane_filter) {
+                // Staging memory is intentionally write-combined and slow to
+                // read, so filtering uses a small CPU-side temporary exactly
+                // as the original path did.
+                std::vector<uint8_t> plane(static_cast<size_t>(bytes));
+                detile(tiled_level(level), ew, eh, 0, slices, plane.data());
+                plane_filter(uint32_t{s.image}, ew, eh, plane.data());
+                std::memcpy(staging, plane.data(), plane.size());
+            } else {
+                detile(tiled_level(level), ew, eh, 0, slices, staging);
+            }
+
+            if (hw == fmt::k8_24) {
+                auto* v = reinterpret_cast<uint32_t*>(staging);
+                for (VkDeviceSize i = 0; i < bytes / 4; ++i) {
+                    const float depth = static_cast<float>(v[i] & 0xFFFFFF) / 16777215.0f;
+                    std::memcpy(&v[i], &depth, 4);
+                }
+            }
+
+            VkBufferImageCopy region{};
+            region.bufferOffset = offset;
+            region.bufferRowLength = ew * block;
+            region.bufferImageHeight = eh * block;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0,
+                                       r.dim == gx2::kDim3D ? 1 : slices};
+            region.imageExtent = {width, height, r.dim == gx2::kDim3D ? slices : 1};
+            vkCmdCopyBufferToImage(cmd(), ring_.buffer(), t.image.image,
+                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
         }
-        if (hw == fmt::k8_24) { // 24-bit unorm depth in the low bits, as a float
-            auto* v = reinterpret_cast<uint32_t*>(staging);
-            for (VkDeviceSize i = 0; i < bytes / 4; ++i) {
-                const float d = static_cast<float>(v[i] & 0xFFFFFF) / 16777215.0f;
-                std::memcpy(&v[i], &d, 4);
+        barrier();
+        profile_mark("texture upload", uint32_t{s.image}, r.width, r.height);
+        report_texture_prepare("direct");
+        return;
+    }
+
+    struct PreparedLevel {
+        uint32_t width = 0, height = 0, ew = 0, eh = 0, slices = 0;
+        size_t bytes = 0;
+        std::vector<uint8_t> data;
+    };
+    std::vector<PreparedLevel> linear(s.mip_levels);
+    std::vector<TiledLevel> tiled_levels(s.mip_levels);
+    size_t total_linear_bytes = 0;
+    for (uint32_t level = 0; level < s.mip_levels; ++level) {
+        // Address-library queries stay on the renderer thread. The workers
+        // only consume immutable TiledLevel descriptors and guest bytes.
+        tiled_levels[level] = tiled_level(level);
+        PreparedLevel& p = linear[level];
+        p.width = std::max(1u, r.width >> level);
+        p.height = std::max(1u, r.height >> level);
+        p.ew = (p.width + block - 1) / block;
+        p.eh = (p.height + block - 1) / block;
+        p.slices = r.dim == gx2::kDim3D ? std::max(1u, r.depth >> level) : r.depth;
+        p.bytes = size_t{p.ew} * p.eh * p.slices * f.bytes;
+        total_linear_bytes += p.bytes;
+    }
+
+    const bool filtered_level0 = hw == fmt::k8 && !linear.empty() && linear[0].slices == 1 && plane_filter;
+    const uint64_t cache_key = texture_cache_key(h, r, s, filtered_level0);
+    std::shared_ptr<const std::vector<uint8_t>> cached_linear;
+    const bool cache_eligible = total_linear_bytes != 0 && total_linear_bytes <= kMaxCachedTextureBytes &&
+                                t.replacement < 0;
+    if (cache_eligible) {
+        cached_linear = texture_ram_cache().find(cache_key, total_linear_bytes);
+        if (!cached_linear) {
+            std::vector<uint8_t> disk_payload;
+            if (load_texture_cache(cache_key, total_linear_bytes, disk_payload)) {
+                cached_linear = texture_ram_cache().insert(cache_key, std::move(disk_payload));
             }
         }
+    }
+    const bool cache_hit = static_cast<bool>(cached_linear);
+
+    if (!cache_hit) {
+        // Large mip levels use a persistent low-priority pool, avoiding
+        // std::async thread creation spikes during gameplay.
+        std::vector<std::future<void>> futures;
+        futures.reserve(std::min<size_t>(linear.size(), texture_worker_pool().worker_count()));
+        const auto prepare = [&](uint32_t level) {
+            PreparedLevel& p = linear[level];
+            p.data.resize(p.bytes);
+            if (level == 0 && !prepared_level0.empty() && prepared_level0.size() == p.bytes) {
+                std::memcpy(p.data.data(), prepared_level0.data(), p.bytes);
+            } else {
+                detile(tiled_levels[level], p.ew, p.eh, 0, p.slices, p.data.data());
+            }
+            if (hw == fmt::k8_24) {
+                auto* v = reinterpret_cast<uint32_t*>(p.data.data());
+                for (size_t i = 0; i < p.bytes / 4; ++i) {
+                    const float depth = static_cast<float>(v[i] & 0xFFFFFF) / 16777215.0f;
+                    std::memcpy(&v[i], &depth, 4);
+                }
+            }
+        };
+
+        constexpr size_t kParallelMipThreshold = 256u << 10;
+        uint32_t async_jobs = 0;
+        const uint32_t max_async_jobs = texture_worker_pool().worker_count();
+        for (uint32_t level = 0; level < s.mip_levels; ++level) {
+            if (linear[level].bytes >= kParallelMipThreshold && async_jobs < max_async_jobs) {
+                futures.push_back(texture_worker_pool().submit([&, level] { prepare(level); }));
+                ++async_jobs;
+            } else {
+                prepare(level);
+            }
+        }
+        for (auto& future : futures) future.get();
+
+        if (filtered_level0 && !linear[0].data.empty()) {
+            plane_filter(uint32_t{s.image}, linear[0].ew, linear[0].eh, linear[0].data.data());
+        }
+    }
+
+    end_rendering_and_barrier();
+    size_t linear_offset = 0;
+    for (uint32_t level = 0; level < s.mip_levels; ++level) {
+        PreparedLevel& p = linear[level];
+        VkDeviceSize offset = 0;
+        uint8_t* staging = upload(p.bytes, 16, offset);
+        const uint8_t* source = cache_hit ? cached_linear->data() + linear_offset : p.data.data();
+        std::memcpy(staging, source, p.bytes);
+
         VkBufferImageCopy region{};
         region.bufferOffset = offset;
-        region.bufferRowLength = ew * block;
-        region.bufferImageHeight = eh * block;
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, r.dim == gx2::kDim3D ? 1 : slices};
-        region.imageExtent = {width, height, r.dim == gx2::kDim3D ? slices : 1};
+        region.bufferRowLength = p.ew * block;
+        region.bufferImageHeight = p.eh * block;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, r.dim == gx2::kDim3D ? 1 : p.slices};
+        region.imageExtent = {p.width, p.height, r.dim == gx2::kDim3D ? p.slices : 1};
         vkCmdCopyBufferToImage(cmd(), ring_.buffer(), t.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        linear_offset += p.bytes;
     }
     barrier();
+
+    if (cache_eligible && !cache_hit) {
+        std::vector<uint8_t> payload(total_linear_bytes);
+        size_t cursor = 0;
+        for (const PreparedLevel& p : linear) {
+            std::memcpy(payload.data() + cursor, p.data.data(), p.bytes);
+            cursor += p.bytes;
+        }
+        auto shared_payload = texture_ram_cache().insert(cache_key, std::move(payload));
+        texture_cache_writer().enqueue(cache_key, std::move(shared_payload));
+    }
+    if (cache_hit && std::getenv("TTT2_TRACE_TEXTURE_LOADS")) {
+        std::fprintf(stderr, "ttt2: gpu: texture cache HIT 0x%08X %ux%u levels %u (%zu bytes)\n",
+                     uint32_t{s.image}, r.width, r.height, uint32_t{s.mip_levels}, total_linear_bytes);
+    }
     profile_mark("texture upload", uint32_t{s.image}, r.width, r.height);
+    report_texture_prepare("upload");
     // TTT2_DUMP_TEXTURES=<directory>: every texture loaded from memory, as PNG.
     static const char* dump = std::getenv("TTT2_DUMP_TEXTURES");
     if (dump && r.dim == gx2::kDim2D) {
@@ -624,7 +1097,17 @@ VkSampler Renderer::sampler(const uint32_t words[3], const float border[4], bool
     if (mip == 0) sci.maxLod = sci.minLod; // no mipmapping
     sci.mipLodBias = static_cast<float>(static_cast<int32_t>(w1 << 0) >> 20) / 64.0f;
     const uint32_t aniso = (w0 >> 19) & 7;
-    if ((mag >= 2 || min >= 2) && aniso > 0) {
+    static const int forced_aniso = [] {
+        const char* value = std::getenv("TTT2_ANISO");
+        if (!value || !*value) return 0;
+        const int parsed = std::atoi(value);
+        return parsed == 2 || parsed == 4 || parsed == 8 || parsed == 16 ? parsed : 0;
+    }();
+    if (forced_aniso > 1 && ((mag & 1) || (min & 1))) {
+        sci.anisotropyEnable = VK_TRUE;
+        sci.maxAnisotropy = std::min<float>(static_cast<float>(forced_aniso),
+                                            ctx_.properties.limits.maxSamplerAnisotropy);
+    } else if ((mag >= 2 || min >= 2) && aniso > 0) {
         sci.anisotropyEnable = VK_TRUE;
         sci.maxAnisotropy = std::min<float>(static_cast<float>(1u << std::min(aniso, 4u)),
                                             ctx_.properties.limits.maxSamplerAnisotropy);

@@ -98,7 +98,7 @@ add_test(NAME wua_layers_test COMMAND wua_layers_test)
 # The title's file formats, icons and texts (synthetic data; no game files).
 add_executable(title_test title_test.cpp)
 target_link_libraries(title_test PRIVATE cafe_title)
-target_compile_options(title_test PRIVATE -Wall -Wextra)
+ttt2_warnings(title_test)
 add_test(NAME title_test COMMAND title_test)
 
 # Guest polling loops must see other threads' stores (no Dolphin needed).
@@ -106,5 +106,70 @@ add_executable(memory_model_test memory_model_test.cpp)
 target_include_directories(memory_model_test PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)
 target_compile_features(memory_model_test PRIVATE cxx_std_20)
 # The flags the port compiles generated code with.
-target_compile_options(memory_model_test PRIVATE -O2 -march=x86-64-v3 -Wno-unused-label)
+if(MSVC)
+    target_compile_options(memory_model_test PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(memory_model_test PRIVATE -O2 -march=x86-64-v3 -Wno-unused-label)
+endif()
 add_test(NAME memory_model_test COMMAND memory_model_test)
+
+
+# Generic dynamic executor vs the same instruction semantics emitted by the
+# ahead-of-time recompiler. This needs no game files and runs in Windows CI.
+set(dynamic_semantics_cases "${CMAKE_CURRENT_BINARY_DIR}/dynamic_semantics_cases.cpp")
+add_custom_command(OUTPUT "${dynamic_semantics_cases}"
+    COMMAND cafe-semgen --generic "${dynamic_semantics_cases}" 6
+    DEPENDS cafe-semgen
+    COMMENT "Generating game-independent PPC differential cases"
+    VERBATIM)
+
+add_executable(dynamic_semantics_test
+    dynamic_semantics_test.cpp
+    "${dynamic_semantics_cases}"
+    ${CMAKE_SOURCE_DIR}/runtime/src/dynamic.cpp)
+target_include_directories(dynamic_semantics_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime/include
+    ${CMAKE_SOURCE_DIR}/runtime/src
+    ${CMAKE_SOURCE_DIR}/recomp/src)
+target_link_libraries(dynamic_semantics_test PRIVATE cafe_recomp)
+target_compile_features(dynamic_semantics_test PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(dynamic_semantics_test PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(dynamic_semantics_test PRIVATE -O2 -march=x86-64-v3)
+endif()
+ttt2_warnings(dynamic_semantics_test)
+add_test(NAME dynamic_semantics_test COMMAND dynamic_semantics_test)
+
+# Block-level dynamic executor vs generated AOT control-flow programs. Unlike
+# dynamic_semantics_test, this enters dynamic::execute(), so Windows CI also
+# validates the tier-1 x64 JIT, basic-block chaining, branches and memory state.
+add_executable(cafe-dyncfgen oracle/cfgen_main.cpp)
+target_link_libraries(cafe-dyncfgen PRIVATE cafe_recomp)
+target_compile_features(cafe-dyncfgen PRIVATE cxx_std_20)
+
+set(dynamic_control_flow_cases "${CMAKE_CURRENT_BINARY_DIR}/dynamic_control_flow_cases.cpp")
+add_custom_command(OUTPUT "${dynamic_control_flow_cases}"
+    COMMAND cafe-dyncfgen "${dynamic_control_flow_cases}"
+    DEPENDS cafe-dyncfgen
+    COMMENT "Assembling game-independent dynamic control-flow cases"
+    VERBATIM)
+
+add_executable(dynamic_control_flow_test
+    dynamic_control_flow_test.cpp
+    "${dynamic_control_flow_cases}"
+    ${CMAKE_SOURCE_DIR}/runtime/src/dynamic.cpp)
+target_include_directories(dynamic_control_flow_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime/include
+    ${CMAKE_SOURCE_DIR}/runtime/src
+    ${CMAKE_SOURCE_DIR}/recomp/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/oracle)
+target_link_libraries(dynamic_control_flow_test PRIVATE cafe_recomp)
+target_compile_features(dynamic_control_flow_test PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(dynamic_control_flow_test PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(dynamic_control_flow_test PRIVATE -O2 -march=x86-64-v3)
+endif()
+ttt2_warnings(dynamic_control_flow_test)
+add_test(NAME dynamic_control_flow_test COMMAND dynamic_control_flow_test)

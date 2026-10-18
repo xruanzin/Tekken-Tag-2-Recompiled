@@ -11,12 +11,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <unordered_map>
 
 namespace cafe::os {
 namespace {
+
+namespace fsys = std::filesystem;
+
+std::string normalize_vfs_path(std::string_view raw) {
+    if (raw.empty()) return {};
+    fsys::path path{std::string(raw)};
+    return path.lexically_normal().generic_string();
+}
 
 std::mutex g_fs_mutex;
 
@@ -27,6 +36,7 @@ double seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 std::unordered_map<uint32_t, int32_t> g_last_status; // FSClient -> last FSStatus
+uint32_t g_fs_error_logs = 0;
 
 // FSErrorFlag bits a caller lists in errMask to receive that status back
 // instead of the system's fatal error handling.
@@ -51,10 +61,21 @@ int32_t finish(GuestAddress client, int32_t status, uint32_t mask, const char* o
         std::lock_guard lock(g_fs_mutex);
         g_last_status[client.value] = status;
     }
-    if (status < 0 && status != vfs::kEnd && !(mask & mask_bit(status))) {
-        // On the console this is a fatal error screen; keep running and say so.
-        std::fprintf(stderr, "ttt2: FS %s %.*s failed with unmasked status %d\n", operation,
-                     static_cast<int>(path.size()), path.data(), status);
+    if (status < 0 && status != vfs::kEnd) {
+        // Log the first boot-time failures even when the title masks them.
+        // Missing optional files are common, so cap this diagnostic to avoid
+        // flooding the console during normal play.
+        if (g_fs_error_logs < 64) {
+            std::fprintf(stderr,
+                         "ttt2: FS diagnostic #%u: %s %.*s -> status %d, mask=0x%08X%s\n",
+                         ++g_fs_error_logs, operation, static_cast<int>(path.size()), path.data(),
+                         status, mask, (mask & mask_bit(status)) ? " (masked)" : " (UNMASKED)");
+        }
+        if (!(mask & mask_bit(status))) {
+            // On the console this is a fatal error screen; keep running and say so.
+            std::fprintf(stderr, "ttt2: FS %s %.*s failed with unmasked status %d\n", operation,
+                         static_cast<int>(path.size()), path.data(), status);
+        }
     }
     return status;
 }
@@ -83,22 +104,25 @@ int32_t FSGetLastError(GuestAddress client) {
     return it == g_last_status.end() ? 0 : it->second;
 }
 
-int32_t FSGetLastErrorCodeForViewer(GuestAddress client) {
-    // Error codes shown to the user; 0 means "no error to show".
-    return FSGetLastError(client) < 0 ? 1503100 : 0;
+int32_t FSGetLastErrorCodeForViewer(GuestAddress) {
+    // Cemu's implementation returns no viewer error here.  The title performs
+    // ordinary masked probes for files that may not exist; translating any
+    // such status into 150-3100 produces a spurious ErrEula screen.
+    return 0;
 }
 
 int32_t FSOpenFile(GuestAddress client, GuestAddress, uint32_t path, uint32_t mode,
                    be<int32_t>* handle, uint32_t mask) {
     int32_t h = -1;
-    const auto status = vfs::open_file(guest_string(path), guest_string(mode), h);
+    const std::string normalized = normalize_vfs_path(guest_string(path));
+    const auto status = vfs::open_file(normalized, guest_string(mode), h);
     if (status == vfs::kOk && handle) *handle = h;
     if (g_trace) {
-        const std::string_view name = guest_string(path);
+        const std::string_view name = normalized;
         std::fprintf(stderr, "fs: %8.3f open %.*s -> %d\n", seconds(), static_cast<int>(name.size()), name.data(),
                      status == vfs::kOk ? h : status);
     }
-    return finish(client, status, mask, "open", guest_string(path));
+    return finish(client, status, mask, "open", normalized);
 }
 
 int32_t read_common(GuestAddress client, uint8_t* destination, uint32_t size, uint32_t count,
@@ -163,9 +187,10 @@ int32_t FSCloseFile(GuestAddress client, GuestAddress, int32_t handle, uint32_t 
 
 int32_t FSGetStat(GuestAddress client, GuestAddress, uint32_t path, uint8_t* out, uint32_t mask) {
     vfs::Stat stat;
-    const auto status = vfs::stat_path(guest_string(path), stat);
+    const std::string normalized = normalize_vfs_path(guest_string(path));
+    const auto status = vfs::stat_path(normalized, stat);
     if (status == vfs::kOk && out) write_stat(out, stat);
-    return finish(client, status, mask, "stat", guest_string(path));
+    return finish(client, status, mask, "stat", normalized);
 }
 
 int32_t FSGetStatFile(GuestAddress client, GuestAddress, int32_t handle, uint8_t* out, uint32_t mask) {
@@ -177,9 +202,10 @@ int32_t FSGetStatFile(GuestAddress client, GuestAddress, int32_t handle, uint8_t
 
 int32_t FSOpenDir(GuestAddress client, GuestAddress, uint32_t path, be<int32_t>* handle, uint32_t mask) {
     int32_t h = -1;
-    const auto status = vfs::open_dir(guest_string(path), h);
+    const std::string normalized = normalize_vfs_path(guest_string(path));
+    const auto status = vfs::open_dir(normalized, h);
     if (status == vfs::kOk && handle) *handle = h;
-    return finish(client, status, mask, "opendir", guest_string(path));
+    return finish(client, status, mask, "opendir", normalized);
 }
 
 // FSDirEntry: FSStat (0x64) then the name (128 bytes).
@@ -215,7 +241,8 @@ int32_t SAVEInitSaveDir(uint8_t slot) {
 
 int32_t SAVEOpenFile(GuestAddress client, GuestAddress block, uint8_t slot, uint32_t path, uint32_t mode,
                      be<int32_t>* handle, uint32_t mask) {
-    const std::string full = "/vol/save/" + save_directory(slot) + "/" + std::string(guest_string(path));
+    const std::string relative = normalize_vfs_path(guest_string(path));
+    const std::string full = normalize_vfs_path("/vol/save/" + save_directory(slot) + "/" + relative);
     int32_t h = -1;
     const auto status = vfs::open_file(full, guest_string(mode), h);
     if (status == vfs::kOk && handle) *handle = h;

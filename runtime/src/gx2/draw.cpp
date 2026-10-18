@@ -5,10 +5,20 @@
 #include "cafe/export.h"
 #include "cafe/runtime.h"
 
+#include <atomic>
+
 namespace cafe::gx2 {
 namespace {
 
 using namespace latte;
+
+std::atomic<bool> g_first_draw_logged{false};
+
+void note_first_draw() {
+    if (!g_first_draw_logged.exchange(true, std::memory_order_relaxed)) {
+        diagnostic_trace("GX2: first draw submitted");
+    }
+}
 
 void GX2SetAttribBuffer(uint32_t index, uint32_t size, uint32_t stride, uint32_t buffer) {
     ApiLock lock;
@@ -36,6 +46,7 @@ void draw_setup(uint32_t mode, uint32_t base_vertex) {
 }
 
 void GX2DrawEx(uint32_t mode, uint32_t count, uint32_t base_vertex, uint32_t instances) {
+    note_first_draw();
     ApiLock lock;
     draw_setup(mode, base_vertex);
     write_packet(pm4::kNumInstances, {instances});
@@ -51,6 +62,7 @@ void GX2DrawEx2(uint32_t mode, uint32_t count, uint32_t base_vertex, uint32_t in
 
 void GX2DrawIndexedEx(uint32_t mode, uint32_t count, uint32_t type, uint32_t indices, uint32_t base_vertex,
                       uint32_t instances) {
+    note_first_draw();
     ApiLock lock;
     draw_indexed(mode, count, type, indices, base_vertex, instances);
 }
@@ -65,6 +77,7 @@ void GX2DrawIndexedEx2(uint32_t mode, uint32_t count, uint32_t type, uint32_t in
 
 void GX2DrawIndexedImmediateEx(uint32_t mode, uint32_t count, uint32_t type, uint32_t indices, uint32_t base_vertex,
                                uint32_t instances) {
+    note_first_draw();
     ApiLock lock;
     draw_setup(mode, base_vertex);
     write_packet(pm4::kIndexType, {index_type_register(type)});

@@ -505,6 +505,17 @@ void system_info_created(uint32_t info) {
 }
 
 void prepare_presentation() {
+    // Diagnostic/compatibility switch: keep the title's original Wii U
+    // presentation assets untouched.  Useful for isolating boot/rendering
+    // problems from the optional PC-specific icon/text/logo replacements.
+    if (const char* enabled = std::getenv("TTT2_PRESENTATION"); enabled && *enabled == '0') {
+        std::fprintf(stderr, "ttt2: presentation replacements disabled\n");
+        host::on_controller_change([](host::Controller kind) {
+            g_controller = kind;
+            apply_confirm_button();
+        });
+        return;
+    }
     const auto begin = std::chrono::steady_clock::now();
     // Texts name buttons by code points only the changed fonts show as icons.
     std::vector<Bank> banks = read_banks(kFontArchive), patch = read_banks(kPatchArchive);

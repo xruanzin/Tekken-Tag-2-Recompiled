@@ -467,7 +467,23 @@ void Renderer::begin_replay(uint32_t n) {
                     rejected * 4 <= matched;
     ++replays_;
     if (replay_blend_) ++blended_replays_;
-    match_seconds_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    const double match_time =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    match_seconds_ += match_time;
+
+    // Camera shake, scene cuts and effect-heavy hits can change most 3D
+    // constants at once. Spending several milliseconds trying to match those
+    // draws only to reject them makes the next game frame late. Temporarily
+    // prefer the title's native 60 Hz frames; gameplay speed takes priority
+    // over extra interpolated presentation frames.
+    static const double budget_ms = [] {
+        const char* value = std::getenv("TTT2_INTERP_BUDGET_MS");
+        return value ? std::max(std::atof(value), 0.25) : 2.0;
+    }();
+    const bool unstable = scene > 0 && (matched * 10 < scene * 8 || rejected * 4 > std::max(matched, 1u));
+    if (match_time * 1000.0 > budget_ms || unstable) {
+        interpolation_cooldown_ = std::max(interpolation_cooldown_, unstable ? 3u : 2u);
+    }
     static const bool trace = std::getenv("TTT2_TRACE_INTERP") != nullptr;
     if (trace && replays_ % 120 == 1) {
         std::fprintf(stderr, "interp: %zu draws (%u 3D), %zu in the previous frame, %u 3D matched, %u too different%s%s\n",
@@ -480,6 +496,11 @@ void Renderer::begin_replay(uint32_t n) {
 // frames cost more than a frame's time), the frame goes out without extra
 // frames, the previous image staying up through their part of its slot.
 bool Renderer::want_replays() {
+    if (interpolation_cooldown_ != 0) {
+        --interpolation_cooldown_;
+        ++skipped_replays_;
+        return false;
+    }
     uint64_t done = 0;
     VK_CHECK(vkGetSemaphoreCounterValue(ctx_.device, timeline_, &done));
     if (done >= previous_frame_ready_) return true;

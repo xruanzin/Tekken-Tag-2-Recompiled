@@ -40,6 +40,7 @@
 #include <mutex>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -99,12 +100,18 @@ struct Texture {
 };
 
 struct ShaderModule {
+    // 0 = synchronous/not started, 1 = compiling asynchronously,
+    // 2 = ready, 3 = failed. State is the publication barrier for module/info.
+    std::atomic<uint8_t> state{0};
     VkShaderModule module = VK_NULL_HANDLE;
     latte::TranslatedShader info;
     bool failed = false;
 };
 
 struct Pipeline {
+    // 0 = synchronous/not started, 1 = compiling asynchronously,
+    // 2 = ready, 3 = failed.
+    std::atomic<uint8_t> state{0};
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     const ShaderModule* vs = nullptr;
@@ -114,6 +121,7 @@ struct Pipeline {
 class Renderer final : public Backend {
 public:
     Renderer();
+    ~Renderer() override;
     const char* name() const override { return "Vulkan"; }
     void draw(const Registers& regs, const Draw& draw) override;
     void clear_color(const Registers& regs, const gx2::ColorBuffer& buffer, const float rgba[4]) override;
@@ -154,6 +162,7 @@ private:
                        uint32_t levels, VkImageUsageFlags usage, VkImageViewType view_type, bool shared = false);
     void destroy_image(Image& image);
     void end_rendering();
+    void end_rendering_and_barrier();
     uint64_t stamp() { return ++events_; }
 
     // ------------------------------------------------- targets (targets.cpp)
@@ -265,6 +274,7 @@ private:
     void copy_image(const Image& src, const Image& dst);
     std::vector<Target*> carried_; // this frame's carried targets
     uint64_t replays_ = 0, blended_replays_ = 0, skipped_replays_ = 0;
+    uint32_t interpolation_cooldown_ = 0;
     double match_seconds_ = 0, replay_seconds_ = 0;
     std::chrono::steady_clock::time_point replay_started_;
 
@@ -368,6 +378,7 @@ private:
     void save_sequence_image(uint32_t n);
 
     uint32_t scale_ = 1; // upscaling factor of screen-sized targets
+    bool native_effect_buffers_ = false; // keep half/quarter-size post FX native when requested
     Context ctx_;
     GuestMemory guest_;
     UploadRing ring_;
@@ -397,6 +408,10 @@ private:
     const Pipeline* bound_pipeline_ = nullptr;
 
     std::vector<std::unique_ptr<Target>> targets_;
+    // Hot lookup used by render-to-texture paths. The title accumulates more
+    // than one hundred targets; scanning the whole vector for every texture
+    // lookup becomes expensive in fight scenes.
+    std::unordered_map<uint32_t, std::vector<Target*>> targets_by_address_;
     std::unordered_map<uint64_t, std::unique_ptr<Texture>> textures_;
     // Textures and shader programs by the 64 KiB pages of guest memory they
     // use, for the CPU-write and cache-invalidation notices (hundreds a frame).
@@ -416,10 +431,57 @@ private:
     };
     std::unordered_map<uint64_t, ProgramEntry> programs_;  // by address/size
     std::unordered_map<uint64_t, std::unique_ptr<ShaderModule>> shaders_;
+
+    struct ShaderCompileTask {
+        ShaderModule* entry = nullptr;
+        latte::Stage stage{};
+        uint64_t program_hash = 0;
+        uint64_t glsl_hash = 0;
+        std::string glsl;
+    };
+    void shader_worker_main();
+    bool async_shaders_ = false;
+    bool shader_pending_ = false;
+    bool shader_compile_stop_ = false;
+    std::mutex shader_compile_mutex_;
+    std::condition_variable shader_compile_cv_;
+    std::deque<ShaderCompileTask> shader_compile_queue_;
+    std::vector<std::thread> shader_compile_threads_;
+
     std::unordered_map<uint64_t, VkPipelineLayout> layouts_;
     std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> pipelines_;
+
+    struct PipelineCompileTask {
+        Pipeline* entry = nullptr;
+        std::array<VkFormat, 8> colors{};
+        VkFormat depth = VK_FORMAT_UNDEFINED;
+        uint32_t color_count = 0;
+        std::array<uint32_t, 8> blend{};
+        uint32_t write_mask = 0;
+        uint32_t polygon_mode = 2;
+        uint32_t topology_class = 2;
+        bool depth_clamp = false;
+    };
+    void pipeline_worker_main();
+    bool async_pipelines_ = true;
+    bool fast_pipelines_ = false;
+    bool skip_pending_compiles_ = true;
+    // Hybrid compile policy: wait only a small amount per rendered frame for
+    // required shader/pipeline work, then skip if it is still pending. This
+    // avoids both 100+ ms stalls and hundreds of missing draws.
+    double compile_wait_budget_max_ms_ = 4.0;
+    double compile_wait_budget_ms_ = 4.0;
+    bool pipeline_pending_ = false;
+    bool pipeline_compile_stop_ = false;
+    std::mutex pipeline_compile_mutex_;
+    std::condition_variable pipeline_compile_cv_;
+    std::deque<PipelineCompileTask> pipeline_compile_queue_;
+    std::thread pipeline_compile_thread_;
+
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
-    uint32_t new_pipelines_ = 0;
+    bool pipeline_cache_warm_ = false;
+    std::mutex pipeline_cache_mutex_;
+    std::atomic<uint32_t> new_pipelines_{0};
 
     // Scan-out: the last frame copied to each scan buffer (TV, DRC).
     Image scan_[2];
@@ -440,20 +502,23 @@ private:
     uint64_t trace_frame_ = UINT64_MAX;
 
     // TTT2_PROFILE_AT=seconds: GPU time of every operation of one frame.
-    void profile_mark(const char* what, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0);
+    void profile_mark(const char* what, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0, uint32_t d = 0);
     void profile_report();
     VkQueryPool profile_pool_ = VK_NULL_HANDLE;
     bool profiling_ = false;
+    bool auto_profile_pending_ = false;
     uint64_t profile_frame_ = UINT64_MAX;
     struct ProfileMark {
         const char* what;
-        uint32_t a, b, c;
+        uint32_t a, b, c, d;
     };
     std::vector<ProfileMark> profile_marks_;
 
     // Statistics, printed every ten seconds.
     uint64_t frames_ = 0, draws_ = 0, skipped_draws_ = 0, waits_ = 0;
+    uint64_t shader_waits_ = 0, pipeline_waits_ = 0;
     double wait_seconds_ = 0, busy_seconds_ = 0;
+    double shader_wait_seconds_ = 0, pipeline_wait_seconds_ = 0;
     VkQueryPool busy_pool_ = VK_NULL_HANDLE; // two timestamps per slot
     double window_start_ = 0;
 };

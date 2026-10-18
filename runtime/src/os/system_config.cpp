@@ -45,10 +45,23 @@ static_assert(sizeof(UCEntry) == 0x54);
 int32_t UCOpen() { return 1; }
 int32_t UCClose(int32_t) { return 0; }
 
+uint32_t console_language() {
+    // Wii U/Cemu language IDs: JA=0, EN=1, FR=2, DE=3, IT=4, ES=5,
+    // ZH=6, KO=7, NL=8, PT=9, RU=10, TW=11.
+    if (const char* value = std::getenv("TTT2_LANGUAGE")) {
+        const int language = std::atoi(value);
+        if (language >= 0 && language <= 11) return static_cast<uint32_t>(language);
+    }
+    return 1; // English
+}
+
 bool lookup(std::string_view name, uint32_t& value) {
+    if (name == "cafe.language") {
+        value = console_language();
+        return true;
+    }
     struct Setting { std::string_view name; uint32_t value; };
     static constexpr Setting kSettings[] = {
-        {"cafe.language", kLanguageEnglish},
         {"cafe.cntry_reg", kCountryUnitedKingdom},
         {"cafe.initial_launch", 2}, // set up, with a user
         {"cafe.eula_version", 0},

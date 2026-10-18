@@ -1,8 +1,10 @@
 #include "host/audio.h"
+#include "cafe/runtime.h"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +15,9 @@ namespace {
 
 SDL_AudioStream* g_stream = nullptr;
 float g_volume = 1.0f; // TTT2_AUDIO_VOLUME, percent
+uint64_t g_underrun_refills = 0;
+uint64_t g_backlog_drops = 0;
+std::chrono::steady_clock::time_point g_last_audio_trace{};
 
 // TTT2_AUDIO_DUMP: 16-bit stereo WAV; the header's sizes are rewritten
 // every second so a run that is killed still leaves a valid file.
@@ -97,15 +102,29 @@ bool audio_device_active() { return g_stream != nullptr; }
 
 void queue_audio(const float* frames, uint32_t count) {
     if (g_stream) {
-        // A stalled device: drop the backlog rather than let it grow.
         const uint32_t queued = queued_audio_frames();
         if (queued > kAudioRate / 4) {
-            std::fprintf(stderr, "ttt2: audio: output backlog over 250 ms, dropped\n");
-            SDL_ClearAudioStream(g_stream);
+            // Do not clear the entire SDL stream: that produces an audible
+            // discontinuity. Drop only this newly generated 3 ms frame and let
+            // the existing queue naturally drain toward the target.
+            ++g_backlog_drops;
+            static uint32_t backlog_reports = 0;
+            if ((backlog_reports++ & 0x3F) == 0) {
+                std::fprintf(stderr, "ttt2: audio: output backlog over 250 ms; draining without stream reset\n");
+            }
+            if (g_dump) dump(frames, count);
+            return;
         } else if (queued < count) {
-            // About to run dry: refill to the target with silence.
+            // About to run dry: refill enough safety headroom once. The AX
+            // clock then accelerates briefly to replace silence with real
+            // mixed frames while the device keeps playing continuously.
             static const float silence[2 * kAudioQueueTarget] = {};
-            SDL_PutAudioStreamData(g_stream, silence, static_cast<int>((kAudioQueueTarget - queued) * 2 * sizeof(float)));
+            const uint32_t fill = kAudioQueueTarget > queued ? kAudioQueueTarget - queued : 0;
+            if (fill != 0) {
+                ++g_underrun_refills;
+                SDL_PutAudioStreamData(g_stream, silence,
+                                       static_cast<int>(fill * 2 * sizeof(float)));
+            }
         }
         if (g_volume == 1.0f) {
             SDL_PutAudioStreamData(g_stream, frames, static_cast<int>(count * 2 * sizeof(float)));
@@ -117,6 +136,19 @@ void queue_audio(const float* frames, uint32_t count) {
                 SDL_PutAudioStreamData(g_stream, scaled, static_cast<int>(n * 2 * sizeof(float)));
                 done += n;
             }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (g_last_audio_trace.time_since_epoch().count() == 0 ||
+            now - g_last_audio_trace >= std::chrono::seconds(10)) {
+            char info[192]{};
+            std::snprintf(info, sizeof(info),
+                          "AUDIO queued_frames=%u underrun_refills=%llu backlog_drops=%llu",
+                          queued_audio_frames(),
+                          static_cast<unsigned long long>(g_underrun_refills),
+                          static_cast<unsigned long long>(g_backlog_drops));
+            cafe::diagnostic_trace(info);
+            g_last_audio_trace = now;
         }
     }
     if (g_dump) dump(frames, count);
