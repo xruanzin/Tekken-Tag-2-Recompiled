@@ -1,6 +1,7 @@
 #include "cafe/dynamic.h"
 
 #include "cafe/export.h"
+#include "cafe/layout.h"
 #include "cafe/ppc_ops.h"
 #include "cafe/runtime.h"
 #include "ppc.h"
