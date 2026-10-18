@@ -916,6 +916,9 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
 
     const auto wait_shader_ready = [&](const ShaderModule* shader, const char* kind) {
         if (shader->state.load(std::memory_order_acquire) == 1) {
+            if (skip_pending_compiles_) {
+                return false;
+            }
             const double wait_begin = compile_now_ms();
             std::unique_lock lock(shader_compile_mutex_);
             shader_compile_cv_.wait(lock, [&] {
@@ -1125,6 +1128,10 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     // Pipeline creation overlaps the CPU-side constant/index work above.
     // Wait only immediately before binding it; never silently lose a draw.
     if (pipe->state.load(std::memory_order_acquire) == 1) {
+        if (skip_pending_compiles_) {
+            ++skipped_draws_;
+            return;
+        }
         const double wait_begin = compile_now_ms();
         std::unique_lock lock(pipeline_compile_mutex_);
         pipeline_compile_cv_.wait(lock, [&] {
