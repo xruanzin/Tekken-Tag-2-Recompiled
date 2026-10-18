@@ -350,17 +350,6 @@ Decoded decode_instruction(uint32_t address, uint32_t word) {
             target};
 }
 
-const Decoded* decoded_at(uint32_t address) {
-    for (const auto& section : g_code) {
-        if (address >= section.begin && address < section.end &&
-            ((address - section.begin) & 3u) == 0) {
-            const size_t index = (address - section.begin) / 4;
-            if (index < section.code.size()) return &section.code[index];
-        }
-    }
-    return nullptr;
-}
-
 void load_integer(PPCContext& ctx, uint8_t* base, uint32_t w, int width,
                   bool sign_extend, bool update, bool indexed, bool byte_reverse = false) {
     const uint32_t d = ppc::rd(w);
