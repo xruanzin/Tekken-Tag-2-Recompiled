@@ -233,6 +233,14 @@ void Renderer::load_pipeline_cache() {
         data.clear();
     }
     pipeline_cache_warm_ = !data.empty();
+    {
+        char cache_info[512]{};
+        const std::string root = host::path_string(cache_directory());
+        std::snprintf(cache_info, sizeof(cache_info),
+                      "CACHE root=%s pipeline=%s bytes=%zu",
+                      root.c_str(), pipeline_cache_warm_ ? "warm" : "cold", data.size());
+        cafe::diagnostic_trace(cache_info);
+    }
     if (pipeline_cache_warm_) {
         std::fprintf(stderr, "ttt2: gpu: loaded %.2f MB Vulkan pipeline cache\n",
                      data.size() / (1024.0 * 1024.0));
