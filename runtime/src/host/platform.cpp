@@ -162,6 +162,12 @@ void set_thread_high_priority() {
 #endif
 }
 
+void set_thread_normal_priority() {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+#endif
+}
+
 void set_thread_low_priority() {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
