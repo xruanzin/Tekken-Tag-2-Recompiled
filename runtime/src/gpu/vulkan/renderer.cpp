@@ -182,6 +182,11 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_SKIP_PENDING_COMPILES")) {
         skip_pending_compiles_ = *value != '\0' && *value != '0';
     }
+    // On the first run there is no reusable Vulkan pipeline cache yet.
+    // Spend a bounded amount of the frame waiting for a pipeline the current
+    // draw actually needs instead of dropping large parts of the scene. Once
+    // the persistent cache is warm, use a much smaller budget.
+    compile_wait_budget_max_ms_ = pipeline_cache_warm_ ? 2.0 : 12.0;
     if (const char* value = std::getenv("TTT2_COMPILE_WAIT_BUDGET_MS")) {
         compile_wait_budget_max_ms_ = std::clamp(std::atof(value), 0.0, 16.0);
     }
