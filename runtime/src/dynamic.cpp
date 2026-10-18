@@ -60,6 +60,7 @@ thread_local uint64_t t_run_calls = 0;
 thread_local auto t_last_progress = std::chrono::steady_clock::now();
 bool g_full_instruction_trace = false;
 bool g_dynamic_boot_trace = false;
+bool g_keep_recent_trace = false;
 
 void trace_dynamic_state(const char* kind, uint32_t pc, uint32_t stop,
                          const PPCContext& ctx) {
@@ -449,9 +450,6 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     const uint32_t a = ins.address;
     const uint32_t w = ins.word;
     const Op op = ins.op;
-    if (g_full_instruction_trace) {
-        remember_instruction(a, w);
-    }
     const uint32_t d = ppc::rd(w);
     const uint32_t ra = ppc::ra(w);
     const uint32_t rb = ppc::rb(w);
@@ -1039,7 +1037,19 @@ uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
     if (count == 0) return block->start;
 
     const Decoded* tail = block->instructions.back();
-    if (!g_full_instruction_trace) {
+
+    // Diagnostics are opt-in. Keep all trace bookkeeping out of the normal
+    // gameplay path: the dynamic runtime executes billions of basic blocks.
+    if (g_full_instruction_trace) {
+        for (size_t i = 0; i + 1 < count; ++i) {
+            const Decoded* ins = block->instructions[i];
+            remember_instruction(ins->address, ins->word);
+            (void)execute_one(*ctx, base, *ins);
+        }
+        remember_instruction(tail->address, tail->word);
+        return execute_one(*ctx, base, *tail);
+    }
+    if (g_keep_recent_trace) {
         remember_instruction(tail->address, tail->word);
     }
 
@@ -1082,12 +1092,15 @@ BlockFn emit_block_thunk(Block* block) {
 }
 #endif
 
-Block* get_or_build_block(uint32_t start) {
+void refresh_hot_block_cache_epoch() {
     const uint64_t epoch = g_hot_block_epoch.load(std::memory_order_relaxed);
     if (t_hot_block_epoch != epoch) {
         t_hot_blocks.fill({});
         t_hot_block_epoch = epoch;
     }
+}
+
+Block* get_or_build_block(uint32_t start) {
     HotBlockEntry& hot = t_hot_blocks[(start >> 2) & (kHotBlockCacheSize - 1)];
     if (hot.block != nullptr && hot.address == start) {
         return hot.block;
@@ -1163,6 +1176,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     g_full_instruction_trace = trace_option && *trace_option == '1';
     const char* boot_trace_option = std::getenv("TTT2_TRACE_DYNAMIC");
     g_dynamic_boot_trace = boot_trace_option && *boot_trace_option == '1';
+    g_keep_recent_trace = g_full_instruction_trace || g_dynamic_boot_trace;
 
     g_rel24_targets.insert(image.rel24_targets.begin(), image.rel24_targets.end());
 
@@ -1203,6 +1217,7 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     }
 
     const std::vector<uint32_t> warm_blocks = prepare_persistent_block_cache(rpx_bytes);
+    refresh_hot_block_cache_epoch();
     size_t warmed = 0;
     for (const uint32_t address : warm_blocks) {
         if (decoded_at(address) && get_or_build_block(address)) ++warmed;
@@ -1243,6 +1258,7 @@ void initialize_data_imports() {
 void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
          bool suppress_presentation_hook) {
     uint32_t pc = entry;
+    refresh_hot_block_cache_epoch();
     ++t_run_calls;
     if (g_dynamic_boot_trace && t_run_calls <= 32) {
         trace_dynamic_state("run-enter", pc, stop, ctx);
@@ -1302,10 +1318,9 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
             fatal("dynamic guest execution reached non-code address 0x%08X", pc);
         }
 
-        ++t_blocks_executed;
-        t_instructions_executed += block->instructions.size();
-
         if (g_dynamic_boot_trace) {
+            ++t_blocks_executed;
+            t_instructions_executed += block->instructions.size();
             // Opt-in diagnostic mode for boot investigations. Normal Player
             // builds keep this disabled so guest threads never synchronously
             // write thousands of trace records while the game is running.
