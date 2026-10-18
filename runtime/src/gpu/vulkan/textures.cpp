@@ -331,7 +331,10 @@ public:
 private:
     void run() {
         host::set_thread_name("texture-detile");
-        host::set_thread_low_priority();
+        // The renderer waits for these jobs before it can upload a newly used
+        // texture. Low-priority workers were easily starved by the dynamic PPC
+        // threads, turning texture preparation into visible stalls.
+        host::set_thread_normal_priority();
         for (;;) {
             std::packaged_task<void()> job;
             {
