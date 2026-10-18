@@ -1259,9 +1259,11 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
          bool suppress_presentation_hook) {
     uint32_t pc = entry;
     refresh_hot_block_cache_epoch();
-    ++t_run_calls;
-    if (g_dynamic_boot_trace && t_run_calls <= 32) {
-        trace_dynamic_state("run-enter", pc, stop, ctx);
+    if (g_dynamic_boot_trace) {
+        ++t_run_calls;
+        if (t_run_calls <= 32) {
+            trace_dynamic_state("run-enter", pc, stop, ctx);
+        }
     }
     while (pc != stop) {
         // The static port replaces this function to observe the system-info
@@ -1278,14 +1280,16 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 
         if (pc >= g_import_min && pc <= g_import_max) {
             if (auto it = g_imports.find(pc); it != g_imports.end() && !it->second.is_data) {
-                ++t_import_calls;
-                if (g_dynamic_boot_trace && t_import_calls <= 64) {
-                    char marker[256]{};
-                    std::snprintf(marker, sizeof(marker),
-                                  "dynamic import #%llu pc=0x%08X %s:%s lr=0x%08X",
-                                  static_cast<unsigned long long>(t_import_calls), pc,
-                                  it->second.module.c_str(), it->second.name.c_str(), ctx.lr);
-                    diagnostic_trace(marker);
+                if (g_dynamic_boot_trace) {
+                    ++t_import_calls;
+                    if (t_import_calls <= 64) {
+                        char marker[256]{};
+                        std::snprintf(marker, sizeof(marker),
+                                      "dynamic import #%llu pc=0x%08X %s:%s lr=0x%08X",
+                                      static_cast<unsigned long long>(t_import_calls), pc,
+                                      it->second.module.c_str(), it->second.name.c_str(), ctx.lr);
+                        diagnostic_trace(marker);
+                    }
                 }
                 if (!it->second.function) {
                     fatal("unimplemented dynamic import %s:%s at 0x%08X",
@@ -1298,15 +1302,17 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
         }
 
         if (PPCFunc* host = find_registered_host_function(pc)) {
-            ++t_host_calls;
-            if (g_dynamic_boot_trace && t_host_calls <= 32) {
-                char marker[224]{};
-                const char* name = host_function_name(pc);
-                std::snprintf(marker, sizeof(marker),
-                              "dynamic host #%llu pc=0x%08X name=%s lr=0x%08X",
-                              static_cast<unsigned long long>(t_host_calls), pc,
-                              name ? name : "(unknown)", ctx.lr);
-                diagnostic_trace(marker);
+            if (g_dynamic_boot_trace) {
+                ++t_host_calls;
+                if (t_host_calls <= 32) {
+                    char marker[224]{};
+                    const char* name = host_function_name(pc);
+                    std::snprintf(marker, sizeof(marker),
+                                  "dynamic host #%llu pc=0x%08X name=%s lr=0x%08X",
+                                  static_cast<unsigned long long>(t_host_calls), pc,
+                                  name ? name : "(unknown)", ctx.lr);
+                    diagnostic_trace(marker);
+                }
             }
             host(ctx, base);
             pc = ctx.lr;
