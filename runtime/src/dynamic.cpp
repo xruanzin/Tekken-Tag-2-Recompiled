@@ -1661,6 +1661,14 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
                  "ttt2: dynamic host: x64 tier-1 JIT %s (%zu warm blocks, %zu direct PPC instructions, %zu native tails)\n",
                  g_jit_enabled && g_jit_arena ? "enabled" : "disabled",
                  g_jit_blocks, g_jit_direct_instructions, g_jit_native_tails);
+    {
+        char jit_info[192]{};
+        std::snprintf(jit_info, sizeof(jit_info),
+                      "DYNAMIC jit=%s warm_blocks=%zu direct_instructions=%zu native_tails=%zu",
+                      g_jit_enabled && g_jit_arena ? "enabled" : "disabled",
+                      g_jit_blocks, g_jit_direct_instructions, g_jit_native_tails);
+        cafe::diagnostic_trace(jit_info);
+    }
 #endif
     std::fprintf(stderr, "ttt2: dynamic host: warmed %zu cached code blocks\n", warmed);
 }
