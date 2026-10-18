@@ -469,6 +469,7 @@ private:
     // Hybrid compile policy: wait only a small amount per rendered frame for
     // required shader/pipeline work, then skip if it is still pending. This
     // avoids both 100+ ms stalls and hundreds of missing draws.
+    double compile_wait_budget_max_ms_ = 4.0;
     double compile_wait_budget_ms_ = 4.0;
     bool pipeline_pending_ = false;
     bool pipeline_compile_stop_ = false;
