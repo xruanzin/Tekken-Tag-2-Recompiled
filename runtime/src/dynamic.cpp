@@ -1032,6 +1032,9 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     return next;
 }
 
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
 uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
     const size_t count = block->instructions.size();
     if (count == 0) return block->start;
