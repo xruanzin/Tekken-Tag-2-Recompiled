@@ -324,7 +324,7 @@ void ax_main(void*) {
     // priority with many interpreted guest threads, the playback queue can
     // drain even though the audio mixer itself is inexpensive.
     host::set_thread_name("cafe-audio");
-    host::set_thread_high_priority();
+    host::set_audio_thread_priority();
     bind_current_thread(t);
     auto next = std::chrono::steady_clock::now();
     float output[2 * kOutputSamples];
