@@ -212,6 +212,12 @@ Extract it, open **Tekken Tag Tournament 2.exe**, choose your own extracted EU v
 The runtime is already included at **bin\ttt2-runtime.exe**.
 No compiler or first-run build is required.
 
+### Dynamic runtime performance
+This release uses the optimized dynamic PowerPC path: direct branch destinations are
+resolved during RPX decode, hot block caching is larger, block-cache contention and
+disk writes are reduced, verbose guest tracing is disabled during normal gameplay,
+and Windows may spread dynamic guest threads across available logical CPUs.
+
 No Tekken game files are included.
 "@ | Set-Content -LiteralPath $Notes -Encoding UTF8
 
