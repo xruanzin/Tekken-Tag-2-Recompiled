@@ -1,5 +1,6 @@
 #include "kernel.h"
 
+#include "cafe/dynamic.h"
 #include "cafe/export.h"
 #include "cafe/ppc_ops.h"
 #include "cafe/sysmem.h"
@@ -119,7 +120,14 @@ void host_main(void* argument) {
     char name[16];
     std::snprintf(name, sizeof(name), "%08X/%d", t->guest, t->core);
     host::set_thread_name(name);
-    host::set_guest_core_hint(t->core);
+    // Static AOT execution benefits from keeping Cafe cores on predictable
+    // host CPUs. The dynamic interpreter can have dozens of simultaneously
+    // runnable guest threads; forcing them toward only three ideal processors
+    // creates severe contention on CPUs such as the Ryzen 5 4600G. Let the
+    // Windows scheduler spread dynamic guest work across all logical CPUs.
+    if (!dynamic::enabled()) {
+        host::set_guest_core_hint(t->core);
+    }
     host::set_thread_high_priority();
     t_current = t;
     set_current_context(&t->ctx);
