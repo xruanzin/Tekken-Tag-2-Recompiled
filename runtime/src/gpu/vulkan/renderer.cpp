@@ -190,6 +190,13 @@ Renderer::Renderer() {
     cafe::diagnostic_trace(skip_pending_compiles_
                                ? "GPU pending shader/pipeline mode=nonblocking"
                                : "GPU pending shader/pipeline mode=blocking");
+    // Upscaling every intermediate GX2 target is both expensive and unsafe
+    // for several render-to-texture effects. In particular, textures that
+    // reinterpret GPU-written effect memory assume native Wii U texel/block
+    // dimensions. Keep intermediate half/quarter-resolution buffers native by
+    // default whenever the final scene is upscaled; the environment variable
+    // remains an explicit override for diagnostics.
+    native_effect_buffers_ = scale_ > 1;
     if (const char* value = std::getenv("TTT2_NATIVE_EFFECT_BUFFERS")) {
         native_effect_buffers_ = *value != '\0' && *value != '0';
     }
