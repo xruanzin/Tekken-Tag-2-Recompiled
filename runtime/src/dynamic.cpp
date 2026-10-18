@@ -1085,32 +1085,361 @@ uint32_t execute_block_cpp(PPCContext* ctx, uint8_t* base, const Block* block) {
     return execute_one(*ctx, base, *tail);
 }
 
+
+uint32_t execute_block_suffix(PPCContext* ctx, uint8_t* base, const Block* block, uint32_t start) {
+    const size_t count = block->count;
+    if (count == 0 || block->first == nullptr || start >= count) return block->start;
+    const Decoded* first = block->first;
+    for (size_t i = start; i + 1 < count; ++i) {
+        (void)execute_one(*ctx, base, first[i]);
+    }
+    return execute_one(*ctx, base, first[count - 1]);
+}
+
 #ifdef _WIN32
+struct X64Emitter {
+    uint8_t* p;
+
+    void b(uint8_t v) { *p++ = v; }
+    void d(uint32_t v) { std::memcpy(p, &v, sizeof(v)); p += sizeof(v); }
+    void q(uint64_t v) { std::memcpy(p, &v, sizeof(v)); p += sizeof(v); }
+
+    static uint32_t r_off(uint32_t r) {
+        return static_cast<uint32_t>(offsetof(PPCContext, r) + r * sizeof(uint32_t));
+    }
+    static uint32_t cr_off(uint32_t f, uint32_t member = 0) {
+        return static_cast<uint32_t>(offsetof(PPCContext, cr) + f * sizeof(CRField) + member);
+    }
+
+    void load_eax_ctx(uint32_t off) { b(0x41); b(0x8B); b(0x83); d(off); }
+    void store_eax_ctx(uint32_t off) { b(0x41); b(0x89); b(0x83); d(off); }
+    void load_r9d_ctx(uint32_t off) { b(0x45); b(0x8B); b(0x8B); d(off); }
+    void store_r9d_ctx(uint32_t off) { b(0x45); b(0x89); b(0x8B); d(off); }
+
+    void load_eax_r(uint32_t r) { load_eax_ctx(r_off(r)); }
+    void store_eax_r(uint32_t r) { store_eax_ctx(r_off(r)); }
+    void load_r9d_r(uint32_t r) { load_r9d_ctx(r_off(r)); }
+    void store_r9d_r(uint32_t r) { store_r9d_ctx(r_off(r)); }
+
+    void mov_eax_imm(uint32_t v) { b(0xB8); d(v); }
+    void add_eax_imm(uint32_t v) { b(0x05); d(v); }
+    void and_eax_imm(uint32_t v) { b(0x25); d(v); }
+    void or_eax_imm(uint32_t v) { b(0x0D); d(v); }
+    void xor_eax_imm(uint32_t v) { b(0x35); d(v); }
+
+    void add_eax_ctx(uint32_t off) { b(0x41); b(0x03); b(0x83); d(off); }
+    void sub_eax_ctx(uint32_t off) { b(0x41); b(0x2B); b(0x83); d(off); }
+    void and_eax_ctx(uint32_t off) { b(0x41); b(0x23); b(0x83); d(off); }
+    void or_eax_ctx(uint32_t off) { b(0x41); b(0x0B); b(0x83); d(off); }
+    void xor_eax_ctx(uint32_t off) { b(0x41); b(0x33); b(0x83); d(off); }
+
+    void setcc_ctx(uint8_t opcode, uint32_t off) {
+        b(0x41); b(0x0F); b(opcode); b(0x83); d(off);
+    }
+    void copy_xer_so(uint32_t cr_field) {
+        b(0x41); b(0x8A); b(0x83); d(static_cast<uint32_t>(offsetof(PPCContext, xer_so)));
+        b(0x41); b(0x88); b(0x83); d(cr_off(cr_field, 3));
+    }
+    void record_eax() {
+        b(0x85); b(0xC0); // test eax,eax
+        setcc_ctx(0x9C, cr_off(0, 0)); // setl
+        setcc_ctx(0x9F, cr_off(0, 1)); // setg
+        setcc_ctx(0x94, cr_off(0, 2)); // sete
+        copy_xer_so(0);
+    }
+    void compare_eax(bool is_signed, uint32_t cr_field) {
+        setcc_ctx(is_signed ? 0x9C : 0x92, cr_off(cr_field, 0));
+        setcc_ctx(is_signed ? 0x9F : 0x97, cr_off(cr_field, 1));
+        setcc_ctx(0x94, cr_off(cr_field, 2));
+        copy_xer_so(cr_field);
+    }
+
+    void ea(const Decoded& ins, bool indexed) {
+        if (indexed) {
+            if (ins.ra == 0) load_eax_r(ins.rb);
+            else {
+                load_eax_r(ins.ra);
+                add_eax_ctx(r_off(ins.rb));
+            }
+        } else {
+            if (ins.ra == 0) mov_eax_imm(static_cast<uint32_t>(static_cast<int32_t>(ins.simm)));
+            else {
+                load_eax_r(ins.ra);
+                add_eax_imm(static_cast<uint32_t>(static_cast<int32_t>(ins.simm)));
+            }
+        }
+    }
+
+    void guest_load_r9d(int width, bool sign_extend, bool byte_reverse) {
+        if (width == 1) {
+            b(0x44); b(0x0F); b(0xB6); b(0x0C); b(0x02);
+        } else if (width == 2) {
+            b(0x44); b(0x0F); b(0xB7); b(0x0C); b(0x02);
+            if (!byte_reverse) { b(0x66); b(0x41); b(0xC1); b(0xC9); b(0x08); }
+            if (sign_extend) { b(0x45); b(0x0F); b(0xBF); b(0xC9); }
+        } else {
+            b(0x44); b(0x8B); b(0x0C); b(0x02);
+            if (!byte_reverse) { b(0x41); b(0x0F); b(0xC9); }
+        }
+    }
+    void guest_store_r9d(int width, bool byte_reverse) {
+        if (width == 1) {
+            b(0x44); b(0x88); b(0x0C); b(0x02);
+        } else if (width == 2) {
+            if (!byte_reverse) { b(0x66); b(0x41); b(0xC1); b(0xC9); b(0x08); }
+            b(0x66); b(0x44); b(0x89); b(0x0C); b(0x02);
+        } else {
+            if (!byte_reverse) { b(0x41); b(0x0F); b(0xC9); }
+            b(0x44); b(0x89); b(0x0C); b(0x02);
+        }
+    }
+
+    bool load_integer_jit(const Decoded& ins, int width, bool sign_extend,
+                          bool update, bool indexed, bool byte_reverse = false) {
+        ea(ins, indexed);
+        guest_load_r9d(width, sign_extend, byte_reverse);
+        store_r9d_r(ins.d);
+        if (update) store_eax_r(ins.ra);
+        return true;
+    }
+    bool store_integer_jit(const Decoded& ins, int width, bool update,
+                           bool indexed, bool byte_reverse = false) {
+        ea(ins, indexed);
+        load_r9d_r(ins.d);
+        guest_store_r9d(width, byte_reverse);
+        if (update) store_eax_r(ins.ra);
+        return true;
+    }
+
+    bool emit(const Decoded& ins) {
+        const uint32_t w = ins.word;
+        const bool rec = ppc::rc(w);
+        const bool oe = ppc::oe(w);
+        switch (ins.op) {
+        case Op::addi:
+            if (ins.ra) { load_eax_r(ins.ra); add_eax_imm(static_cast<uint32_t>(static_cast<int32_t>(ins.simm))); }
+            else mov_eax_imm(static_cast<uint32_t>(static_cast<int32_t>(ins.simm)));
+            store_eax_r(ins.d);
+            return true;
+        case Op::addis:
+            if (ins.ra) { load_eax_r(ins.ra); add_eax_imm(static_cast<uint32_t>(static_cast<int32_t>(ins.simm)) << 16); }
+            else mov_eax_imm(static_cast<uint32_t>(static_cast<int32_t>(ins.simm)) << 16);
+            store_eax_r(ins.d);
+            return true;
+        case Op::mulli:
+            b(0x41); b(0x69); b(0x83); d(r_off(ins.ra));
+            d(static_cast<uint32_t>(static_cast<int32_t>(ins.simm)));
+            store_eax_r(ins.d);
+            return true;
+        case Op::add:
+            if (oe) return false;
+            load_eax_r(ins.ra); add_eax_ctx(r_off(ins.rb)); store_eax_r(ins.d);
+            if (rec) record_eax();
+            return true;
+        case Op::subf:
+            if (oe) return false;
+            load_eax_r(ins.rb); sub_eax_ctx(r_off(ins.ra)); store_eax_r(ins.d);
+            if (rec) record_eax();
+            return true;
+        case Op::neg:
+            if (oe) return false;
+            load_eax_r(ins.ra); b(0xF7); b(0xD8); store_eax_r(ins.d);
+            if (rec) record_eax();
+            return true;
+        case Op::mullw:
+            if (oe) return false;
+            load_eax_r(ins.ra);
+            b(0x41); b(0x0F); b(0xAF); b(0x83); d(r_off(ins.rb));
+            store_eax_r(ins.d);
+            if (rec) record_eax();
+            return true;
+
+        case Op::cmp:
+        case Op::cmpl:
+            load_eax_r(ins.ra);
+            b(0x41); b(0x3B); b(0x83); d(r_off(ins.rb));
+            compare_eax(ins.op == Op::cmp, ppc::crfd(w));
+            return true;
+        case Op::cmpi:
+        case Op::cmpli:
+            load_eax_r(ins.ra); b(0x3D);
+            d(ins.op == Op::cmpi ? static_cast<uint32_t>(static_cast<int32_t>(ins.simm)) : ins.uimm);
+            compare_eax(ins.op == Op::cmpi, ppc::crfd(w));
+            return true;
+
+        case Op::and_:
+            load_eax_r(ins.d); and_eax_ctx(r_off(ins.rb)); store_eax_r(ins.ra);
+            if (rec) record_eax(); return true;
+        case Op::or_:
+            load_eax_r(ins.d); or_eax_ctx(r_off(ins.rb)); store_eax_r(ins.ra);
+            if (rec) record_eax(); return true;
+        case Op::xor_:
+            load_eax_r(ins.d); xor_eax_ctx(r_off(ins.rb)); store_eax_r(ins.ra);
+            if (rec) record_eax(); return true;
+        case Op::andc:
+        case Op::orc:
+            load_eax_r(ins.d); load_r9d_r(ins.rb);
+            b(0x41); b(0xF7); b(0xD1); // not r9d
+            b(0x44); b(ins.op == Op::andc ? 0x21 : 0x09); b(0xC8);
+            store_eax_r(ins.ra); if (rec) record_eax(); return true;
+        case Op::nand:
+        case Op::nor:
+        case Op::eqv:
+            load_eax_r(ins.d);
+            if (ins.op == Op::nand) and_eax_ctx(r_off(ins.rb));
+            else if (ins.op == Op::nor) or_eax_ctx(r_off(ins.rb));
+            else xor_eax_ctx(r_off(ins.rb));
+            b(0xF7); b(0xD0); // not eax
+            store_eax_r(ins.ra); if (rec) record_eax(); return true;
+        case Op::andi_rc:
+            load_eax_r(ins.d); and_eax_imm(ins.uimm); store_eax_r(ins.ra); record_eax(); return true;
+        case Op::andis_rc:
+            load_eax_r(ins.d); and_eax_imm(ins.uimm << 16); store_eax_r(ins.ra); record_eax(); return true;
+        case Op::ori:
+            load_eax_r(ins.d); or_eax_imm(ins.uimm); store_eax_r(ins.ra); return true;
+        case Op::oris:
+            load_eax_r(ins.d); or_eax_imm(ins.uimm << 16); store_eax_r(ins.ra); return true;
+        case Op::xori:
+            load_eax_r(ins.d); xor_eax_imm(ins.uimm); store_eax_r(ins.ra); return true;
+        case Op::xoris:
+            load_eax_r(ins.d); xor_eax_imm(ins.uimm << 16); store_eax_r(ins.ra); return true;
+        case Op::extsb:
+            load_eax_r(ins.d); b(0x0F); b(0xBE); b(0xC0); store_eax_r(ins.ra);
+            if (rec) record_eax(); return true;
+        case Op::extsh:
+            load_eax_r(ins.d); b(0x0F); b(0xBF); b(0xC0); store_eax_r(ins.ra);
+            if (rec) record_eax(); return true;
+
+        case Op::rlwinm: {
+            load_eax_r(ins.d);
+            b(0xC1); b(0xC0); b(static_cast<uint8_t>(ins.rb & 31));
+            and_eax_imm(rotate_mask(ppc::mb(w), ppc::me(w)));
+            store_eax_r(ins.ra); if (rec) record_eax(); return true;
+        }
+        case Op::rlwimi: {
+            const uint32_t mask = rotate_mask(ppc::mb(w), ppc::me(w));
+            load_eax_r(ins.d); load_r9d_r(ins.ra);
+            b(0xC1); b(0xC0); b(static_cast<uint8_t>(ins.rb & 31));
+            and_eax_imm(mask);
+            b(0x41); b(0x81); b(0xE1); d(~mask); // and r9d,~mask
+            b(0x44); b(0x09); b(0xC8);           // or eax,r9d
+            store_eax_r(ins.ra); if (rec) record_eax(); return true;
+        }
+
+        case Op::lbz: return load_integer_jit(ins, 1, false, false, false);
+        case Op::lbzu: return load_integer_jit(ins, 1, false, true, false);
+        case Op::lbzx: return load_integer_jit(ins, 1, false, false, true);
+        case Op::lbzux: return load_integer_jit(ins, 1, false, true, true);
+        case Op::lhz: return load_integer_jit(ins, 2, false, false, false);
+        case Op::lhzu: return load_integer_jit(ins, 2, false, true, false);
+        case Op::lhzx: return load_integer_jit(ins, 2, false, false, true);
+        case Op::lhzux: return load_integer_jit(ins, 2, false, true, true);
+        case Op::lha: return load_integer_jit(ins, 2, true, false, false);
+        case Op::lhau: return load_integer_jit(ins, 2, true, true, false);
+        case Op::lhax: return load_integer_jit(ins, 2, true, false, true);
+        case Op::lhaux: return load_integer_jit(ins, 2, true, true, true);
+        case Op::lwz: return load_integer_jit(ins, 4, false, false, false);
+        case Op::lwzu: return load_integer_jit(ins, 4, false, true, false);
+        case Op::lwzx: return load_integer_jit(ins, 4, false, false, true);
+        case Op::lwzux: return load_integer_jit(ins, 4, false, true, true);
+        case Op::lhbrx: return load_integer_jit(ins, 2, false, false, true, true);
+        case Op::lwbrx: return load_integer_jit(ins, 4, false, false, true, true);
+
+        case Op::stb: return store_integer_jit(ins, 1, false, false);
+        case Op::stbu: return store_integer_jit(ins, 1, true, false);
+        case Op::stbx: return store_integer_jit(ins, 1, false, true);
+        case Op::stbux: return store_integer_jit(ins, 1, true, true);
+        case Op::sth: return store_integer_jit(ins, 2, false, false);
+        case Op::sthu: return store_integer_jit(ins, 2, true, false);
+        case Op::sthx: return store_integer_jit(ins, 2, false, true);
+        case Op::sthux: return store_integer_jit(ins, 2, true, true);
+        case Op::stw: return store_integer_jit(ins, 4, false, false);
+        case Op::stwu: return store_integer_jit(ins, 4, true, false);
+        case Op::stwx: return store_integer_jit(ins, 4, false, true);
+        case Op::stwux: return store_integer_jit(ins, 4, true, true);
+        case Op::sthbrx: return store_integer_jit(ins, 2, false, true, true);
+        case Op::stwbrx: return store_integer_jit(ins, 4, false, true, true);
+
+        case Op::mfspr: {
+            const uint32_t spr = ppc::spr(w);
+            if (spr == 8) load_eax_ctx(static_cast<uint32_t>(offsetof(PPCContext, lr)));
+            else if (spr == 9) load_eax_ctx(static_cast<uint32_t>(offsetof(PPCContext, ctr)));
+            else return false;
+            store_eax_r(ins.d); return true;
+        }
+        case Op::mtspr: {
+            const uint32_t spr = ppc::spr(w);
+            if (spr != 8 && spr != 9) return false;
+            load_eax_r(ins.d);
+            store_eax_ctx(static_cast<uint32_t>(spr == 8 ? offsetof(PPCContext, lr) : offsetof(PPCContext, ctr)));
+            return true;
+        }
+
+        case Op::dcbf:
+        case Op::dcbi:
+        case Op::dcbst:
+        case Op::dcbt:
+        case Op::dcbtst:
+        case Op::icbi:
+        case Op::isync:
+        case Op::eieio:
+            return true;
+        case Op::sync:
+            b(0x0F); b(0xAE); b(0xF0); // mfence
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    void suffix(Block* block, uint32_t start) {
+        // Restore first argument even if future fast ops use ECX/CL.
+        b(0x4C); b(0x89); b(0xD9); // mov rcx,r11
+        b(0x49); b(0xB8); q(reinterpret_cast<uintptr_t>(block)); // r8
+        b(0x41); b(0xB9); d(start); // r9d
+        b(0x48); b(0xB8); q(reinterpret_cast<uintptr_t>(&execute_block_suffix));
+        b(0x48); b(0x83); b(0xEC); b(0x28);
+        b(0xFF); b(0xD0);
+        b(0x48); b(0x83); b(0xC4); b(0x28);
+        b(0xC3);
+    }
+};
+
 BlockFn emit_block_thunk(Block* block) {
-    if (!g_jit_enabled || !g_jit_arena) return nullptr;
+    if (!g_jit_enabled || !g_jit_arena || g_keep_recent_trace ||
+        block == nullptr || block->first == nullptr || block->count < 2) {
+        return nullptr;
+    }
 
-    // Windows x64 ABI:
-    //   RCX = PPCContext*, RDX = guest base, R8 = Block*.
-    // The thunk supplies R8 then tail-jumps to execute_block_cpp, preserving
-    // the caller's shadow space and return address.
-    constexpr size_t kThunkSize = 22;
-    if (g_jit_offset + 32 > kJitArenaSize) return nullptr;
     g_jit_offset = (g_jit_offset + 15) & ~size_t{15};
+    constexpr size_t kMaxBlockCode = 4096;
+    if (g_jit_offset + kMaxBlockCode > kJitArenaSize) return nullptr;
+
     uint8_t* code = g_jit_arena + g_jit_offset;
-    uint8_t* p = code;
+    X64Emitter e{code};
+    e.b(0x49); e.b(0x89); e.b(0xCB); // mov r11,rcx
 
-    *p++ = 0x49; *p++ = 0xB8; // mov r8, imm64
-    const uintptr_t block_ptr = reinterpret_cast<uintptr_t>(block);
-    std::memcpy(p, &block_ptr, sizeof(block_ptr)); p += sizeof(block_ptr);
+    size_t direct = 0;
+    const size_t tail = block->count - 1;
+    size_t suffix_start = tail;
+    for (size_t i = 0; i < tail; ++i) {
+        if (!e.emit(block->first[i])) {
+            suffix_start = i;
+            break;
+        }
+        ++direct;
+    }
+    // A helper call costs more than interpreting one trivial instruction.
+    if (direct < 2) return nullptr;
 
-    *p++ = 0x48; *p++ = 0xB8; // mov rax, imm64
-    const uintptr_t helper = reinterpret_cast<uintptr_t>(&execute_block_cpp);
-    std::memcpy(p, &helper, sizeof(helper)); p += sizeof(helper);
+    e.suffix(block, static_cast<uint32_t>(suffix_start));
+    const size_t bytes = static_cast<size_t>(e.p - code);
+    if (bytes > kMaxBlockCode) return nullptr;
 
-    *p++ = 0xFF; *p++ = 0xE0; // jmp rax
-    static_assert(kThunkSize == 22);
-    g_jit_offset += static_cast<size_t>(p - code);
-    FlushInstructionCache(GetCurrentProcess(), code, static_cast<SIZE_T>(p - code));
+    g_jit_offset += bytes;
+    ++g_jit_blocks;
+    g_jit_direct_instructions += direct;
+    FlushInstructionCache(GetCurrentProcess(), code, static_cast<SIZE_T>(bytes));
     return reinterpret_cast<BlockFn>(code);
 }
 #endif
@@ -1222,6 +1551,9 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     const char* boot_trace_option = std::getenv("TTT2_TRACE_DYNAMIC");
     g_dynamic_boot_trace = boot_trace_option && *boot_trace_option == '1';
     g_keep_recent_trace = g_full_instruction_trace || g_dynamic_boot_trace;
+#ifdef _WIN32
+    if (g_keep_recent_trace) g_jit_enabled = false;
+#endif
 
     g_rel24_targets.insert(image.rel24_targets.begin(), image.rel24_targets.end());
 
@@ -1276,8 +1608,10 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
                  "ttt2: dynamic host: decoded %zu PPC instructions across %zu code sections in %.2f ms\n",
                  instruction_count, g_code.size(), ms);
 #ifdef _WIN32
-    std::fprintf(stderr, "ttt2: dynamic host: x64 dispatch trampolines %s\n",
-                 g_jit_enabled && g_jit_arena ? "enabled" : "disabled (direct C++ blocks)");
+    std::fprintf(stderr,
+                 "ttt2: dynamic host: x64 tier-1 JIT %s (%zu warm blocks, %zu direct PPC instructions)\n",
+                 g_jit_enabled && g_jit_arena ? "enabled" : "disabled",
+                 g_jit_blocks, g_jit_direct_instructions);
 #endif
     std::fprintf(stderr, "ttt2: dynamic host: warmed %zu cached code blocks\n", warmed);
 }
