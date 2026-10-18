@@ -212,22 +212,26 @@ Extract it, open **Tekken Tag Tournament 2.exe**, choose your own extracted EU v
 The runtime is already included at **bin\ttt2-runtime.exe**.
 No compiler or first-run build is required.
 
-### Dynamic runtime performance
-This release includes the second performance pass for the zero-install PowerPC runtime:
+### Gameplay, graphics and audio performance
+This release adds the third performance/compatibility pass for the zero-install runtime:
 
-- normal guest-code blocks stay on a fast chained dispatcher path instead of returning
-  through import/host checks after every basic block;
-- PPC integer and floating-point memory operations reuse operands decoded when the RPX
-  is loaded, and the dynamic executor is compiled at Clang -O3;
-- Windows guest-thread priorities are balanced instead of promoting every OSThread to
-  ABOVE_NORMAL, reducing contention with rendering and shader compilation;
-- pending asynchronous shaders and Vulkan pipelines no longer stall a frame for tens or
-  hundreds of milliseconds: the affected draw is temporarily skipped until compilation
-  finishes, then appears normally on subsequent frames;
-- 12-thread hosts use three background shader workers to populate the persistent cache
-  faster;
-- previous branch predecode, hot block cache, concurrent block lookups and reduced disk
-  churn remain enabled.
+- a conservative Windows Tier-1 PPC-to-x64 JIT translates common integer, logic,
+  compare and memory operations directly to native x64; unsupported, floating-point
+  and paired-single instructions transparently fall back to the proven C++ executor;
+- the JIT is covered by a block-level differential control-flow test against generated
+  AOT code, in addition to the existing instruction-semantics tests;
+- render-target lookup is indexed by guest address instead of scanning every accumulated
+  target for hot render-to-texture paths;
+- texture detile workers run at normal priority so the renderer is not blocked waiting
+  on deliberately throttled texture preparation;
+- asynchronous shader/pipeline compilation now uses a small per-frame wait budget:
+  short compiles can finish without missing the draw, while long driver compiles still
+  cannot freeze a frame for 100+ ms;
+- the AX audio thread is promoted for its 3 ms deadline, playback headroom is increased
+  to about 85 ms, underrun recovery is faster, and backlog handling no longer clears the
+  whole SDL audio stream;
+- the chained PPC dispatcher, Clang -O3 executor, predecoded operands, balanced Windows
+  guest priorities, persistent caches and three shader workers remain enabled.
 
 No Tekken game files are included.
 "@ | Set-Content -LiteralPath $Notes -Encoding UTF8
