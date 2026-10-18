@@ -74,10 +74,10 @@ jobs:
             -DTTT2_WINDOWS_RESOURCE="$env:TTT2_WINDOWS_RESOURCE"
 
       - name: Compile host tools, launchers and game-independent tests
-        run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-census cafe-semgen cafe-shader ttt2_dynamic ttt2_launcher ttt2_player_launcher ttt2_play title_test memory_model_test wua_layers_test dynamic_semantics_test
+        run: cmake --build build/windows --target cafe_runtime cafe-recomp cafe-census cafe-semgen cafe-shader ttt2_dynamic ttt2_launcher ttt2_player_launcher ttt2_play title_test memory_model_test wua_layers_test dynamic_semantics_test dynamic_control_flow_test
 
       - name: Run data-independent tests
-        run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test|dynamic_semantics_test"
+        run: ctest --test-dir build/windows -C Release --output-on-failure -R "title_test|memory_model_test|wua_layers_test|dynamic_semantics_test|dynamic_control_flow_test"
 
       - name: Validate release/build script syntax
         shell: pwsh
