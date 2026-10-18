@@ -180,6 +180,10 @@ Renderer::Renderer() {
     if (const char* value = std::getenv("TTT2_SKIP_PENDING_COMPILES")) {
         skip_pending_compiles_ = *value != '\0' && *value != '0';
     }
+    if (const char* value = std::getenv("TTT2_COMPILE_WAIT_BUDGET_MS")) {
+        compile_wait_budget_max_ms_ = std::clamp(std::atof(value), 0.0, 16.0);
+    }
+    compile_wait_budget_ms_ = compile_wait_budget_max_ms_;
     cafe::diagnostic_trace(fast_pipelines_
                                ? "GPU pipeline mode=fast-create"
                                : "GPU pipeline mode=fully-optimized");
@@ -676,6 +680,7 @@ void Renderer::swap() {
     }
     ++frame_number_;
     ++frames_;
+    compile_wait_budget_ms_ = compile_wait_budget_max_ms_;
     const double t = now_seconds();
     // Persist newly compiled pipelines quickly. This matters especially on
     // Windows, where a crash/Alt-F4 shortly after entering a new stage used
