@@ -918,6 +918,19 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
         if (shader->state.load(std::memory_order_acquire) == 1) {
             const double wait_begin = compile_now_ms();
             std::unique_lock lock(shader_compile_mutex_);
+            // This draw needs the shader now. Do not let it sit behind a long
+            // FIFO backlog of speculative first-use compiles: promote its
+            // queued task so a worker picks it next.
+            const auto pending = std::find_if(shader_compile_queue_.begin(), shader_compile_queue_.end(),
+                                              [&](const ShaderCompileTask& task) {
+                                                  return task.entry == shader;
+                                              });
+            if (pending != shader_compile_queue_.end() && pending != shader_compile_queue_.begin()) {
+                ShaderCompileTask urgent = std::move(*pending);
+                shader_compile_queue_.erase(pending);
+                shader_compile_queue_.push_front(std::move(urgent));
+                shader_compile_cv_.notify_one();
+            }
             if (skip_pending_compiles_) {
                 const double allowed_ms = compile_wait_budget_ms_;
                 if (allowed_ms <= 0.0) return false;
@@ -1139,6 +1152,19 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     if (pipe->state.load(std::memory_order_acquire) == 1) {
         const double wait_begin = compile_now_ms();
         std::unique_lock lock(pipeline_compile_mutex_);
+        // Required pipelines outrank background discoveries. This keeps a
+        // newly entered stage from skipping hundreds of draws while one FIFO
+        // worker drains unrelated pipelines first.
+        const auto pending = std::find_if(pipeline_compile_queue_.begin(), pipeline_compile_queue_.end(),
+                                          [&](const PipelineCompileTask& task) {
+                                              return task.entry == pipe;
+                                          });
+        if (pending != pipeline_compile_queue_.end() && pending != pipeline_compile_queue_.begin()) {
+            PipelineCompileTask urgent = std::move(*pending);
+            pipeline_compile_queue_.erase(pending);
+            pipeline_compile_queue_.push_front(std::move(urgent));
+            pipeline_compile_cv_.notify_one();
+        }
         if (skip_pending_compiles_) {
             const double allowed_ms = compile_wait_budget_ms_;
             if (allowed_ms <= 0.0) {
