@@ -55,11 +55,13 @@ bool Renderer::upscaled_size(uint32_t width, uint32_t height) const {
 }
 
 Target* Renderer::find_target(uint32_t address, uint32_t format, bool depth) {
+    const auto found = targets_by_address_.find(address);
+    if (found == targets_by_address_.end()) return nullptr;
     Target* best = nullptr;
-    for (auto& t : targets_) {
-        if (t->address != address || t->depth != depth) continue;
+    for (Target* t : found->second) {
+        if (t == nullptr || t->depth != depth) continue;
         if (format != 0 && (t->format & 0x3F) != (format & 0x3F)) continue;
-        if (best == nullptr || t->written > best->written) best = t.get();
+        if (best == nullptr || t->written > best->written) best = t;
     }
     return best;
 }
@@ -70,9 +72,11 @@ Target* Renderer::color_target(uint32_t base_reg, uint32_t size_reg, uint32_t in
     const uint32_t format = color_buffer_surface_format(info_reg);
     const uint32_t pitch = ((size_reg & 0x3FF) + 1) * 8;
     const uint32_t height = (((size_reg >> 10) & 0xFFFFF) + 1) * 64 / pitch;
-    for (auto& t : targets_) {
-        if (!t->depth && t->address == address && t->format == format && t->pitch == pitch && t->height == height) {
-            return t.get();
+    if (const auto found = targets_by_address_.find(address); found != targets_by_address_.end()) {
+        for (Target* t : found->second) {
+            if (t && !t->depth && t->format == format && t->pitch == pitch && t->height == height) {
+                return t;
+            }
         }
     }
     const FormatInfo f = color_format(format);
@@ -101,7 +105,9 @@ Target* Renderer::color_target(uint32_t base_reg, uint32_t size_reg, uint32_t in
                      address, format, pitch, height, tile_mode, t->scale, size_reg, info_reg);
     }
     targets_.push_back(std::move(t));
-    return targets_.back().get();
+    Target* created = targets_.back().get();
+    targets_by_address_[created->address].push_back(created);
+    return created;
 }
 
 Target* Renderer::color_target(const gx2::ColorBuffer& buffer) {
@@ -114,9 +120,11 @@ Target* Renderer::depth_target(uint32_t base_reg, uint32_t size_reg, uint32_t in
     const uint32_t format = depth_buffer_surface_format(info_reg);
     const uint32_t pitch = ((size_reg & 0x3FF) + 1) * 8;
     const uint32_t height = (((size_reg >> 10) & 0xFFFFF) + 1) * 64 / pitch;
-    for (auto& t : targets_) {
-        if (t->depth && t->address == address && t->format == format && t->pitch == pitch && t->height == height) {
-            return t.get();
+    if (const auto found = targets_by_address_.find(address); found != targets_by_address_.end()) {
+        for (Target* t : found->second) {
+            if (t && t->depth && t->format == format && t->pitch == pitch && t->height == height) {
+                return t;
+            }
         }
     }
     const FormatInfo f = depth_format(format);
@@ -144,7 +152,9 @@ Target* Renderer::depth_target(uint32_t base_reg, uint32_t size_reg, uint32_t in
     t->written = stamp();
     t->written_frame = frame_number_;
     targets_.push_back(std::move(t));
-    return targets_.back().get();
+    Target* created = targets_.back().get();
+    targets_by_address_[created->address].push_back(created);
+    return created;
 }
 
 Target* Renderer::depth_target(const gx2::DepthBuffer& buffer) {
