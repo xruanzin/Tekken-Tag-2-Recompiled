@@ -127,8 +127,18 @@ void host_main(void* argument) {
     // Windows scheduler spread dynamic guest work across all logical CPUs.
     if (!dynamic::enabled()) {
         host::set_guest_core_hint(t->core);
+        host::set_thread_high_priority();
+    } else {
+        // Wii U guest priorities use lower numbers for more important threads.
+        // Do not run every emulated OSThread ABOVE_NORMAL on Windows: TTT2
+        // creates many worker/background threads and the dynamic interpreter
+        // otherwise starves the renderer, shader compiler and other guest
+        // threads. Preserve a boost only for genuinely high-priority guest
+        // work; normal/background threads stay at NORMAL.
+        const int32_t guest_priority = field<int32_t>(t->guest, kEffectivePriority);
+        if (guest_priority <= 8) host::set_thread_high_priority();
+        else host::set_thread_normal_priority();
     }
-    host::set_thread_high_priority();
     t_current = t;
     set_current_context(&t->ctx);
     uint32_t exit_value;
