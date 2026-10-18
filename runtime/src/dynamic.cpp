@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <shared_mutex>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -98,7 +99,7 @@ constexpr uint32_t kPresentationHook = 0x0864107Cu;
 constexpr size_t kMaxBlockInstructions = 64;
 
 std::unordered_map<uint32_t, std::unique_ptr<Block>> g_blocks;
-std::mutex g_block_mutex;
+std::shared_mutex g_block_mutex;
 
 // Hot guest loops revisit the same basic blocks constantly. Avoid taking the
 // global block mutex and hashing into g_blocks on every iteration by keeping a
@@ -117,7 +118,7 @@ std::filesystem::path g_block_cache_path;
 std::unordered_set<uint32_t> g_known_block_starts;
 std::vector<uint32_t> g_pending_block_starts;
 bool g_cache_exit_registered = false;
-constexpr size_t kBlockCacheFlushBatch = 128;
+constexpr size_t kBlockCacheFlushBatch = 8192;
 
 #ifdef _WIN32
 constexpr size_t kJitArenaSize = 8u << 20;
@@ -1087,7 +1088,7 @@ Block* get_or_build_block(uint32_t start) {
     }
 
     {
-        std::lock_guard lock(g_block_mutex);
+        std::shared_lock lock(g_block_mutex);
         const auto found = g_blocks.find(start);
         if (found != g_blocks.end()) {
             hot = {start, found->second.get()};
@@ -1143,6 +1144,9 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
         g_known_block_starts.clear();
         g_pending_block_starts.clear();
         g_block_cache_path.clear();
+        g_blocks.reserve(262144);
+        g_known_block_starts.reserve(262144);
+        g_pending_block_starts.reserve(kBlockCacheFlushBatch);
 #ifdef _WIN32
         reset_jit_arena();
 #endif
@@ -1354,6 +1358,9 @@ void initialize_test_program(uint32_t base_address,
         g_known_block_starts.clear();
         g_pending_block_starts.clear();
         g_block_cache_path.clear();
+        g_blocks.reserve(262144);
+        g_known_block_starts.reserve(262144);
+        g_pending_block_starts.reserve(kBlockCacheFlushBatch);
 #ifdef _WIN32
         reset_jit_arena();
 #endif
