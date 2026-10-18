@@ -138,6 +138,7 @@ size_t g_jit_offset = 0;
 bool g_jit_enabled = true;
 size_t g_jit_blocks = 0;
 size_t g_jit_direct_instructions = 0;
+size_t g_jit_native_tails = 0;
 #endif
 
 struct CodeSection {
@@ -252,6 +253,7 @@ void reset_jit_arena() {
     g_jit_offset = 0;
     g_jit_blocks = 0;
     g_jit_direct_instructions = 0;
+    g_jit_native_tails = 0;
     const char* option = std::getenv("TTT2_DYNAMIC_JIT");
     g_jit_enabled = option == nullptr || *option == '\0' || *option != '0';
     if (!g_jit_enabled) return;
@@ -1122,6 +1124,10 @@ struct X64Emitter {
     void store_r9d_r(uint32_t r) { store_r9d_ctx(r_off(r)); }
 
     void mov_eax_imm(uint32_t v) { b(0xB8); d(v); }
+    void store_imm_ctx(uint32_t off, uint32_t v) {
+        b(0x41); b(0xC7); b(0x83); d(off); d(v);
+    }
+    void ret() { b(0xC3); }
     void add_eax_imm(uint32_t v) { b(0x05); d(v); }
     void and_eax_imm(uint32_t v) { b(0x25); d(v); }
     void or_eax_imm(uint32_t v) { b(0x0D); d(v); }
@@ -1392,6 +1398,42 @@ struct X64Emitter {
         }
     }
 
+    bool tail(const Decoded& ins) {
+        const uint32_t lr_off = static_cast<uint32_t>(offsetof(PPCContext, lr));
+        const uint32_t ctr_off = static_cast<uint32_t>(offsetof(PPCContext, ctr));
+        const bool link = ppc::lk(ins.word);
+        switch (ins.op) {
+        case Op::b:
+            if (link) store_imm_ctx(lr_off, ins.address + 4);
+            mov_eax_imm(ins.direct_target);
+            ret();
+            return true;
+        case Op::bc:
+            // BO=0b1x1xx: neither CTR nor CR participates, so this is an
+            // unconditional branch encoded with bc.
+            if ((ins.d & 0x14) != 0x14) return false;
+            if (link) store_imm_ctx(lr_off, ins.address + 4);
+            mov_eax_imm(ins.direct_target);
+            ret();
+            return true;
+        case Op::bclr:
+            if ((ins.d & 0x14) != 0x14) return false;
+            // The target is the old LR when LK is set.
+            load_eax_ctx(lr_off);
+            if (link) store_imm_ctx(lr_off, ins.address + 4);
+            ret();
+            return true;
+        case Op::bcctr:
+            if ((ins.d & 0x14) != 0x14) return false;
+            load_eax_ctx(ctr_off);
+            if (link) store_imm_ctx(lr_off, ins.address + 4);
+            ret();
+            return true;
+        default:
+            return false;
+        }
+    }
+
     void suffix(Block* block, uint32_t start) {
         // Restore first argument even if future fast ops use ECX/CL.
         b(0x4C); b(0x89); b(0xD9); // mov rcx,r11
@@ -1407,7 +1449,7 @@ struct X64Emitter {
 
 BlockFn emit_block_thunk(Block* block) {
     if (!g_jit_enabled || !g_jit_arena || g_keep_recent_trace ||
-        block == nullptr || block->first == nullptr || block->count < 2) {
+        block == nullptr || block->first == nullptr || block->count == 0) {
         return nullptr;
     }
 
@@ -1429,16 +1471,23 @@ BlockFn emit_block_thunk(Block* block) {
         }
         ++direct;
     }
-    // A helper call costs more than interpreting one trivial instruction.
-    if (direct < 2) return nullptr;
+    bool native_tail = false;
+    if (suffix_start == tail) {
+        native_tail = e.tail(block->first[tail]);
+    }
+    if (!native_tail) {
+        // A helper call costs more than interpreting one trivial instruction.
+        if (direct < 2) return nullptr;
+        e.suffix(block, static_cast<uint32_t>(suffix_start));
+    }
 
-    e.suffix(block, static_cast<uint32_t>(suffix_start));
     const size_t bytes = static_cast<size_t>(e.p - code);
     if (bytes > kMaxBlockCode) return nullptr;
 
     g_jit_offset += bytes;
     ++g_jit_blocks;
     g_jit_direct_instructions += direct;
+    if (native_tail) ++g_jit_native_tails;
     FlushInstructionCache(GetCurrentProcess(), code, static_cast<SIZE_T>(bytes));
     return reinterpret_cast<BlockFn>(code);
 }
@@ -1609,9 +1658,9 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
                  instruction_count, g_code.size(), ms);
 #ifdef _WIN32
     std::fprintf(stderr,
-                 "ttt2: dynamic host: x64 tier-1 JIT %s (%zu warm blocks, %zu direct PPC instructions)\n",
+                 "ttt2: dynamic host: x64 tier-1 JIT %s (%zu warm blocks, %zu direct PPC instructions, %zu native tails)\n",
                  g_jit_enabled && g_jit_arena ? "enabled" : "disabled",
-                 g_jit_blocks, g_jit_direct_instructions);
+                 g_jit_blocks, g_jit_direct_instructions, g_jit_native_tails);
 #endif
     std::fprintf(stderr, "ttt2: dynamic host: warmed %zu cached code blocks\n", warmed);
 }
