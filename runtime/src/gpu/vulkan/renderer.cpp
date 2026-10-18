@@ -147,10 +147,11 @@ Renderer::Renderer() {
     }
     if (async_shaders_) {
         const uint32_t logical = std::max(1u, std::thread::hardware_concurrency());
-        // Three workers are a better balance on 6C/12T CPUs: shader misses
-        // stop blocking frames, so the goal is to make missing effects become
-        // ready quickly without consuming half of the host CPU.
-        const uint32_t workers = logical >= 12 ? 3u : (logical >= 6 ? 2u : 1u);
+        // Do not oversubscribe 6C/12T systems: texture detile, pipeline
+        // creation, renderer, AX and guest PPC work can all become active at
+        // the same time. Two shader workers leave real CPU headroom for frame
+        // pacing and audio. Larger hosts may use three.
+        const uint32_t workers = logical >= 16 ? 3u : (logical >= 6 ? 2u : 1u);
         std::fprintf(stderr, "ttt2: GPU: asynchronous shader compilation enabled (%u workers)\n", workers);
         char shader_workers[128]{};
         std::snprintf(shader_workers, sizeof(shader_workers),
