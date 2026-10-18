@@ -12,6 +12,12 @@ namespace cafe::dynamic {
 void initialize(const std::vector<uint8_t>& rpx_bytes);
 bool enabled();
 
+struct RuntimeStats {
+    uint64_t native_blocks = 0;
+    uint64_t cpp_blocks = 0;
+};
+RuntimeStats runtime_stats();
+
 // Initializes imported data objects after the system heap exists.
 void initialize_data_imports();
 
