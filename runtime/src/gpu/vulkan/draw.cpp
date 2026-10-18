@@ -916,15 +916,24 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
 
     const auto wait_shader_ready = [&](const ShaderModule* shader, const char* kind) {
         if (shader->state.load(std::memory_order_acquire) == 1) {
-            if (skip_pending_compiles_) {
-                return false;
-            }
             const double wait_begin = compile_now_ms();
             std::unique_lock lock(shader_compile_mutex_);
-            shader_compile_cv_.wait(lock, [&] {
-                return shader->state.load(std::memory_order_acquire) != 1;
-            });
+            if (skip_pending_compiles_) {
+                const double allowed_ms = compile_wait_budget_ms_;
+                if (allowed_ms <= 0.0) return false;
+                shader_compile_cv_.wait_for(
+                    lock, std::chrono::duration<double, std::milli>(allowed_ms), [&] {
+                        return shader->state.load(std::memory_order_acquire) != 1;
+                    });
+            } else {
+                shader_compile_cv_.wait(lock, [&] {
+                    return shader->state.load(std::memory_order_acquire) != 1;
+                });
+            }
             const double wait_ms = compile_now_ms() - wait_begin;
+            if (skip_pending_compiles_) {
+                compile_wait_budget_ms_ = std::max(0.0, compile_wait_budget_ms_ - wait_ms);
+            }
             shader_wait_seconds_ += wait_ms / 1000.0;
             ++shader_waits_;
             if (wait_ms >= 2.0 || trace_shader_cache()) {
@@ -1128,20 +1137,35 @@ void Renderer::draw(const Registers& regs, const Draw& d) {
     // Pipeline creation overlaps the CPU-side constant/index work above.
     // Wait only immediately before binding it; never silently lose a draw.
     if (pipe->state.load(std::memory_order_acquire) == 1) {
-        if (skip_pending_compiles_) {
-            ++skipped_draws_;
-            return;
-        }
         const double wait_begin = compile_now_ms();
         std::unique_lock lock(pipeline_compile_mutex_);
-        pipeline_compile_cv_.wait(lock, [&] {
-            return pipe->state.load(std::memory_order_acquire) != 1;
-        });
+        if (skip_pending_compiles_) {
+            const double allowed_ms = compile_wait_budget_ms_;
+            if (allowed_ms <= 0.0) {
+                ++skipped_draws_;
+                return;
+            }
+            pipeline_compile_cv_.wait_for(
+                lock, std::chrono::duration<double, std::milli>(allowed_ms), [&] {
+                    return pipe->state.load(std::memory_order_acquire) != 1;
+                });
+        } else {
+            pipeline_compile_cv_.wait(lock, [&] {
+                return pipe->state.load(std::memory_order_acquire) != 1;
+            });
+        }
         const double wait_ms = compile_now_ms() - wait_begin;
+        if (skip_pending_compiles_) {
+            compile_wait_budget_ms_ = std::max(0.0, compile_wait_budget_ms_ - wait_ms);
+        }
         pipeline_wait_seconds_ += wait_ms / 1000.0;
         ++pipeline_waits_;
         if (wait_ms >= 2.0 || trace_shader_cache()) {
             std::fprintf(stderr, "ttt2: gpu: waited %.2f ms for required Vulkan pipeline\n", wait_ms);
+        }
+        if (pipe->state.load(std::memory_order_acquire) == 1) {
+            ++skipped_draws_;
+            return;
         }
     }
     if (pipe->state.load(std::memory_order_acquire) != 2 || pipe->pipeline == VK_NULL_HANDLE) {
