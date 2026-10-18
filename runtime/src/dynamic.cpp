@@ -350,12 +350,15 @@ Decoded decode_instruction(uint32_t address, uint32_t word) {
             target};
 }
 
-void load_integer(PPCContext& ctx, uint8_t* base, uint32_t w, int width,
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
+void load_integer(PPCContext& ctx, uint8_t* base, const Decoded& ins, int width,
                   bool sign_extend, bool update, bool indexed, bool byte_reverse = false) {
-    const uint32_t d = ppc::rd(w);
-    const uint32_t ra = ppc::ra(w);
-    const uint32_t ea = indexed ? ea_x(ctx, ra, ppc::rb(w))
-                                : ea_d(ctx, ra, ppc::simm(w));
+    const uint32_t d = ins.d;
+    const uint32_t ra = ins.ra;
+    const uint32_t ea = indexed ? ea_x(ctx, ra, ins.rb)
+                                : ea_d(ctx, ra, ins.simm);
     uint32_t value = 0;
     if (width == 1) {
         value = ppc::ld8(base, ea);
@@ -370,12 +373,15 @@ void load_integer(PPCContext& ctx, uint8_t* base, uint32_t w, int width,
     if (update) ctx.r[ra] = ea;
 }
 
-void store_integer(PPCContext& ctx, uint8_t* base, uint32_t w, int width,
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
+void store_integer(PPCContext& ctx, uint8_t* base, const Decoded& ins, int width,
                    bool update, bool indexed, bool byte_reverse = false) {
-    const uint32_t s = ppc::rd(w);
-    const uint32_t ra = ppc::ra(w);
-    const uint32_t ea = indexed ? ea_x(ctx, ra, ppc::rb(w))
-                                : ea_d(ctx, ra, ppc::simm(w));
+    const uint32_t s = ins.d;
+    const uint32_t ra = ins.ra;
+    const uint32_t ea = indexed ? ea_x(ctx, ra, ins.rb)
+                                : ea_d(ctx, ra, ins.simm);
     if (width == 1) {
         ppc::st8(base, ea, static_cast<uint8_t>(ctx.r[s]));
     } else if (width == 2) {
@@ -388,12 +394,15 @@ void store_integer(PPCContext& ctx, uint8_t* base, uint32_t w, int width,
     if (update) ctx.r[ra] = ea;
 }
 
-void fload(PPCContext& ctx, uint8_t* base, uint32_t w, bool single,
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
+void fload(PPCContext& ctx, uint8_t* base, const Decoded& ins, bool single,
            bool update, bool indexed) {
-    const uint32_t d = ppc::rd(w);
-    const uint32_t ra = ppc::ra(w);
-    const uint32_t ea = indexed ? ea_x(ctx, ra, ppc::rb(w))
-                                : ea_d(ctx, ra, ppc::simm(w));
+    const uint32_t d = ins.d;
+    const uint32_t ra = ins.ra;
+    const uint32_t ea = indexed ? ea_x(ctx, ra, ins.rb)
+                                : ea_d(ctx, ra, ins.simm);
     if (single) {
         const double value = ppc::load_single(ppc::ld32(base, ea));
         ctx.f[d].ps0 = value;
@@ -404,12 +413,15 @@ void fload(PPCContext& ctx, uint8_t* base, uint32_t w, bool single,
     if (update) ctx.r[ra] = ea;
 }
 
-void fstore(PPCContext& ctx, uint8_t* base, uint32_t w, bool single,
+#if defined(__clang__)
+__attribute__((always_inline)) inline
+#endif
+void fstore(PPCContext& ctx, uint8_t* base, const Decoded& ins, bool single,
             bool update, bool indexed, bool integer_word = false) {
-    const uint32_t s = ppc::rd(w);
-    const uint32_t ra = ppc::ra(w);
-    const uint32_t ea = indexed ? ea_x(ctx, ra, ppc::rb(w))
-                                : ea_d(ctx, ra, ppc::simm(w));
+    const uint32_t s = ins.d;
+    const uint32_t ra = ins.ra;
+    const uint32_t ea = indexed ? ea_x(ctx, ra, ins.rb)
+                                : ea_d(ctx, ra, ins.simm);
     if (integer_word) {
         ppc::st32(base, ea, static_cast<uint32_t>(ppc::bits(ctx.f[s].ps0)));
     } else if (single) {
@@ -617,39 +629,39 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
         if (ppc::rc(w)) record(ctx, ctx.r[ra]);
         break;
 
-    case Op::lbz: load_integer(ctx, base, w, 1, false, false, false); break;
-    case Op::lbzu: load_integer(ctx, base, w, 1, false, true, false); break;
-    case Op::lbzx: load_integer(ctx, base, w, 1, false, false, true); break;
-    case Op::lbzux: load_integer(ctx, base, w, 1, false, true, true); break;
-    case Op::lhz: load_integer(ctx, base, w, 2, false, false, false); break;
-    case Op::lhzu: load_integer(ctx, base, w, 2, false, true, false); break;
-    case Op::lhzx: load_integer(ctx, base, w, 2, false, false, true); break;
-    case Op::lhzux: load_integer(ctx, base, w, 2, false, true, true); break;
-    case Op::lha: load_integer(ctx, base, w, 2, true, false, false); break;
-    case Op::lhau: load_integer(ctx, base, w, 2, true, true, false); break;
-    case Op::lhax: load_integer(ctx, base, w, 2, true, false, true); break;
-    case Op::lhaux: load_integer(ctx, base, w, 2, true, true, true); break;
-    case Op::lwz: load_integer(ctx, base, w, 4, false, false, false); break;
-    case Op::lwzu: load_integer(ctx, base, w, 4, false, true, false); break;
-    case Op::lwzx: load_integer(ctx, base, w, 4, false, false, true); break;
-    case Op::lwzux: load_integer(ctx, base, w, 4, false, true, true); break;
-    case Op::lhbrx: load_integer(ctx, base, w, 2, false, false, true, true); break;
-    case Op::lwbrx: load_integer(ctx, base, w, 4, false, false, true, true); break;
+    case Op::lbz: load_integer(ctx, base, ins, 1, false, false, false); break;
+    case Op::lbzu: load_integer(ctx, base, ins, 1, false, true, false); break;
+    case Op::lbzx: load_integer(ctx, base, ins, 1, false, false, true); break;
+    case Op::lbzux: load_integer(ctx, base, ins, 1, false, true, true); break;
+    case Op::lhz: load_integer(ctx, base, ins, 2, false, false, false); break;
+    case Op::lhzu: load_integer(ctx, base, ins, 2, false, true, false); break;
+    case Op::lhzx: load_integer(ctx, base, ins, 2, false, false, true); break;
+    case Op::lhzux: load_integer(ctx, base, ins, 2, false, true, true); break;
+    case Op::lha: load_integer(ctx, base, ins, 2, true, false, false); break;
+    case Op::lhau: load_integer(ctx, base, ins, 2, true, true, false); break;
+    case Op::lhax: load_integer(ctx, base, ins, 2, true, false, true); break;
+    case Op::lhaux: load_integer(ctx, base, ins, 2, true, true, true); break;
+    case Op::lwz: load_integer(ctx, base, ins, 4, false, false, false); break;
+    case Op::lwzu: load_integer(ctx, base, ins, 4, false, true, false); break;
+    case Op::lwzx: load_integer(ctx, base, ins, 4, false, false, true); break;
+    case Op::lwzux: load_integer(ctx, base, ins, 4, false, true, true); break;
+    case Op::lhbrx: load_integer(ctx, base, ins, 2, false, false, true, true); break;
+    case Op::lwbrx: load_integer(ctx, base, ins, 4, false, false, true, true); break;
 
-    case Op::stb: store_integer(ctx, base, w, 1, false, false); break;
-    case Op::stbu: store_integer(ctx, base, w, 1, true, false); break;
-    case Op::stbx: store_integer(ctx, base, w, 1, false, true); break;
-    case Op::stbux: store_integer(ctx, base, w, 1, true, true); break;
-    case Op::sth: store_integer(ctx, base, w, 2, false, false); break;
-    case Op::sthu: store_integer(ctx, base, w, 2, true, false); break;
-    case Op::sthx: store_integer(ctx, base, w, 2, false, true); break;
-    case Op::sthux: store_integer(ctx, base, w, 2, true, true); break;
-    case Op::stw: store_integer(ctx, base, w, 4, false, false); break;
-    case Op::stwu: store_integer(ctx, base, w, 4, true, false); break;
-    case Op::stwx: store_integer(ctx, base, w, 4, false, true); break;
-    case Op::stwux: store_integer(ctx, base, w, 4, true, true); break;
-    case Op::sthbrx: store_integer(ctx, base, w, 2, false, true, true); break;
-    case Op::stwbrx: store_integer(ctx, base, w, 4, false, true, true); break;
+    case Op::stb: store_integer(ctx, base, ins, 1, false, false); break;
+    case Op::stbu: store_integer(ctx, base, ins, 1, true, false); break;
+    case Op::stbx: store_integer(ctx, base, ins, 1, false, true); break;
+    case Op::stbux: store_integer(ctx, base, ins, 1, true, true); break;
+    case Op::sth: store_integer(ctx, base, ins, 2, false, false); break;
+    case Op::sthu: store_integer(ctx, base, ins, 2, true, false); break;
+    case Op::sthx: store_integer(ctx, base, ins, 2, false, true); break;
+    case Op::sthux: store_integer(ctx, base, ins, 2, true, true); break;
+    case Op::stw: store_integer(ctx, base, ins, 4, false, false); break;
+    case Op::stwu: store_integer(ctx, base, ins, 4, true, false); break;
+    case Op::stwx: store_integer(ctx, base, ins, 4, false, true); break;
+    case Op::stwux: store_integer(ctx, base, ins, 4, true, true); break;
+    case Op::sthbrx: store_integer(ctx, base, ins, 2, false, true, true); break;
+    case Op::stwbrx: store_integer(ctx, base, ins, 4, false, true, true); break;
 
     case Op::lmw:
         ppc::lmw(ctx, base, d, ea_d(ctx, ra, simm));
@@ -785,23 +797,23 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
         ppc::dcbz(base, ea_x(ctx, ra, rb));
         break;
 
-    case Op::lfs: fload(ctx, base, w, true, false, false); break;
-    case Op::lfsu: fload(ctx, base, w, true, true, false); break;
-    case Op::lfsx: fload(ctx, base, w, true, false, true); break;
-    case Op::lfsux: fload(ctx, base, w, true, true, true); break;
-    case Op::lfd: fload(ctx, base, w, false, false, false); break;
-    case Op::lfdu: fload(ctx, base, w, false, true, false); break;
-    case Op::lfdx: fload(ctx, base, w, false, false, true); break;
-    case Op::lfdux: fload(ctx, base, w, false, true, true); break;
-    case Op::stfs: fstore(ctx, base, w, true, false, false); break;
-    case Op::stfsu: fstore(ctx, base, w, true, true, false); break;
-    case Op::stfsx: fstore(ctx, base, w, true, false, true); break;
-    case Op::stfsux: fstore(ctx, base, w, true, true, true); break;
-    case Op::stfd: fstore(ctx, base, w, false, false, false); break;
-    case Op::stfdu: fstore(ctx, base, w, false, true, false); break;
-    case Op::stfdx: fstore(ctx, base, w, false, false, true); break;
-    case Op::stfdux: fstore(ctx, base, w, false, true, true); break;
-    case Op::stfiwx: fstore(ctx, base, w, false, false, true, true); break;
+    case Op::lfs: fload(ctx, base, ins, true, false, false); break;
+    case Op::lfsu: fload(ctx, base, ins, true, true, false); break;
+    case Op::lfsx: fload(ctx, base, ins, true, false, true); break;
+    case Op::lfsux: fload(ctx, base, ins, true, true, true); break;
+    case Op::lfd: fload(ctx, base, ins, false, false, false); break;
+    case Op::lfdu: fload(ctx, base, ins, false, true, false); break;
+    case Op::lfdx: fload(ctx, base, ins, false, false, true); break;
+    case Op::lfdux: fload(ctx, base, ins, false, true, true); break;
+    case Op::stfs: fstore(ctx, base, ins, true, false, false); break;
+    case Op::stfsu: fstore(ctx, base, ins, true, true, false); break;
+    case Op::stfsx: fstore(ctx, base, ins, true, false, true); break;
+    case Op::stfsux: fstore(ctx, base, ins, true, true, true); break;
+    case Op::stfd: fstore(ctx, base, ins, false, false, false); break;
+    case Op::stfdu: fstore(ctx, base, ins, false, true, false); break;
+    case Op::stfdx: fstore(ctx, base, ins, false, false, true); break;
+    case Op::stfdux: fstore(ctx, base, ins, false, true, true); break;
+    case Op::stfiwx: fstore(ctx, base, ins, false, false, true, true); break;
 
     case Op::fadd: ctx.f[d].ps0 = ppc::add(ctx.f[ra].ps0, ctx.f[rb].ps0); break;
     case Op::fsub: ctx.f[d].ps0 = ppc::sub(ctx.f[ra].ps0, ctx.f[rb].ps0); break;
