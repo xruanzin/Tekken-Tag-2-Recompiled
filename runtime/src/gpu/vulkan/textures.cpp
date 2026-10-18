@@ -300,8 +300,8 @@ public:
         const uint64_t total = host::system_memory_total_bytes();
         worker_count_ = 1;
         if (hardware >= 6 && total >= 8ull * kGiB) worker_count_ = 2;
-        if (hardware >= 12 && total >= 12ull * kGiB) worker_count_ = 3;
-        if (hardware >= 20 && total >= 24ull * kGiB) worker_count_ = 4;
+        if (hardware >= 16 && total >= 16ull * kGiB) worker_count_ = 3;
+        if (hardware >= 24 && total >= 24ull * kGiB) worker_count_ = 4;
         for (uint32_t i = 0; i < worker_count_; ++i) workers_.emplace_back([this] { run(); });
 
         char info[128]{};
