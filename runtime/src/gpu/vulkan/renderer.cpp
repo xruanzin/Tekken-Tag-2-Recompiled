@@ -8,6 +8,7 @@
 #include "host/platform.h"
 
 #include "cafe/runtime.h"
+#include "cafe/dynamic.h"
 
 #include <shaderc/shaderc.h>
 
@@ -714,6 +715,11 @@ void Renderer::swap() {
         const double pipeline_wait_ms = pipeline_wait_seconds_ * 1000.0 / frame_count;
         const double shader_waits_per_frame = double(shader_waits_) / frame_count;
         const double pipeline_waits_per_frame = double(pipeline_waits_) / frame_count;
+        const auto dyn_stats = cafe::dynamic::runtime_stats();
+        const uint64_t ppc_blocks = dyn_stats.native_blocks + dyn_stats.cpp_blocks;
+        const double ppc_native_pct = ppc_blocks != 0
+                                          ? 100.0 * double(dyn_stats.native_blocks) / double(ppc_blocks)
+                                          : 0.0;
 
         // last_run.log can be unavailable on GUI-subsystem Windows launches.
         // Mirror the useful performance counters into the raw boot trace,
@@ -724,11 +730,14 @@ void Renderer::swap() {
             "PERF fps=%.1f draws/frame=%.0f skipped/frame=%.0f gpu_waits/frame=%.1f "
             "gpu_wait_ms/frame=%.2f gpu_busy_ms/frame=%.2f shader_waits/frame=%.2f "
             "shader_wait_ms/frame=%.2f pipeline_waits/frame=%.2f pipeline_wait_ms/frame=%.2f "
-            "targets=%zu textures=%zu shaders=%zu pipelines=%zu replay_ms/frame=%.2f match_ms/frame=%.2f",
+            "targets=%zu textures=%zu shaders=%zu pipelines=%zu replay_ms/frame=%.2f match_ms/frame=%.2f "
+            "ppc_native_pct=%.1f ppc_native_blocks=%llu ppc_cpp_blocks=%llu",
             fps, draws_per_frame, skipped_per_frame, waits_per_frame, wait_ms, busy_ms,
             shader_waits_per_frame, shader_wait_ms, pipeline_waits_per_frame, pipeline_wait_ms,
             targets_.size(), textures_.size(), shaders_.size(), pipelines_.size(),
-            replay_ms, match_ms);
+            replay_ms, match_ms, ppc_native_pct,
+            static_cast<unsigned long long>(dyn_stats.native_blocks),
+            static_cast<unsigned long long>(dyn_stats.cpp_blocks));
         cafe::diagnostic_trace(perf);
 
         std::fprintf(stderr, "ttt2: gpu: %.1f frames/s, %.0f draws per frame (%.0f skipped), %zu targets, %zu textures, "
