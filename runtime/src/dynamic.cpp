@@ -124,6 +124,10 @@ constexpr size_t kHotBlockCacheSize = 32768;
 thread_local std::array<HotBlockEntry, kHotBlockCacheSize> t_hot_blocks{};
 thread_local uint64_t t_hot_block_epoch = 0;
 std::atomic<uint64_t> g_hot_block_epoch{1};
+std::atomic<uint64_t> g_native_blocks_executed{0};
+std::atomic<uint64_t> g_cpp_blocks_executed{0};
+thread_local uint32_t t_native_block_batch = 0;
+thread_local uint32_t t_cpp_block_batch = 0;
 
 std::filesystem::path g_block_cache_path;
 std::unordered_set<uint32_t> g_known_block_starts;
@@ -1530,6 +1534,15 @@ BlockFn emit_block_thunk(Block* block) {
 }
 #endif
 
+void account_block_execution(bool native) {
+    uint32_t& batch = native ? t_native_block_batch : t_cpp_block_batch;
+    if (++batch >= 2048) {
+        (native ? g_native_blocks_executed : g_cpp_blocks_executed)
+            .fetch_add(batch, std::memory_order_relaxed);
+        batch = 0;
+    }
+}
+
 void refresh_hot_block_cache_epoch() {
     const uint64_t epoch = g_hot_block_epoch.load(std::memory_order_relaxed);
     if (t_hot_block_epoch != epoch) {
@@ -1632,6 +1645,10 @@ void initialize(const std::vector<uint8_t>& rpx_bytes) {
     }
 
     g_hot_block_epoch.fetch_add(1, std::memory_order_relaxed);
+    g_native_blocks_executed.store(0, std::memory_order_relaxed);
+    g_cpp_blocks_executed.store(0, std::memory_order_relaxed);
+    t_native_block_batch = 0;
+    t_cpp_block_batch = 0;
     const char* trace_option = std::getenv("TTT2_TRACE_GUEST");
     g_full_instruction_trace = trace_option && *trace_option == '1';
     const char* boot_trace_option = std::getenv("TTT2_TRACE_DYNAMIC");
@@ -1714,6 +1731,13 @@ bool enabled() {
     return g_enabled.load(std::memory_order_acquire);
 }
 
+RuntimeStats runtime_stats() {
+    RuntimeStats stats{};
+    stats.native_blocks = g_native_blocks_executed.load(std::memory_order_relaxed);
+    stats.cpp_blocks = g_cpp_blocks_executed.load(std::memory_order_relaxed);
+    return stats;
+}
+
 void initialize_data_imports() {
     std::lock_guard lock(g_mutex);
     for (const auto& [stub, binding] : g_imports) {
@@ -1776,10 +1800,12 @@ void run(PPCContext& ctx, uint8_t* base, uint32_t entry, uint32_t stop,
 
 #ifdef _WIN32
             if (block->native) {
+                account_block_execution(true);
                 pc = block->native(&ctx, base);
             } else
 #endif
             {
+                account_block_execution(false);
                 pc = execute_block_cpp(&ctx, base, block);
             }
         }
