@@ -480,6 +480,9 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
     switch (op) {
     case Op::addi:
         ctx.r[d] = (ra ? ctx.r[ra] : 0u) + static_cast<uint32_t>(simm);
+        if (a == 0x02EF885Cu && cafe_ppc_runtime_option(1)) {
+            ctx.r[7] = 0;
+        }
         break;
     case Op::addis:
         ctx.r[d] = (ra ? ctx.r[ra] : 0u) + (static_cast<uint32_t>(simm) << 16);
@@ -1041,9 +1044,6 @@ uint32_t execute_one(PPCContext& ctx, uint8_t* base, const Decoded& ins) {
         break;
     }
 
-    if (a == 0x02EF885Cu && w == 0x38E00002u && cafe_ppc_runtime_option(1)) {
-        ctx.r[7] = 0;
-    }
     return next;
 }
 
