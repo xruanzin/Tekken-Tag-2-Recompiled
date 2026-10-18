@@ -213,10 +213,21 @@ The runtime is already included at **bin\ttt2-runtime.exe**.
 No compiler or first-run build is required.
 
 ### Dynamic runtime performance
-This release uses the optimized dynamic PowerPC path: direct branch destinations are
-resolved during RPX decode, hot block caching is larger, block-cache contention and
-disk writes are reduced, verbose guest tracing is disabled during normal gameplay,
-and Windows may spread dynamic guest threads across available logical CPUs.
+This release includes the second performance pass for the zero-install PowerPC runtime:
+
+- normal guest-code blocks stay on a fast chained dispatcher path instead of returning
+  through import/host checks after every basic block;
+- PPC integer and floating-point memory operations reuse operands decoded when the RPX
+  is loaded, and the dynamic executor is compiled at Clang -O3;
+- Windows guest-thread priorities are balanced instead of promoting every OSThread to
+  ABOVE_NORMAL, reducing contention with rendering and shader compilation;
+- pending asynchronous shaders and Vulkan pipelines no longer stall a frame for tens or
+  hundreds of milliseconds: the affected draw is temporarily skipped until compilation
+  finishes, then appears normally on subsequent frames;
+- 12-thread hosts use three background shader workers to populate the persistent cache
+  faster;
+- previous branch predecode, hot block cache, concurrent block lookups and reduced disk
+  churn remain enabled.
 
 No Tekken game files are included.
 "@ | Set-Content -LiteralPath $Notes -Encoding UTF8
